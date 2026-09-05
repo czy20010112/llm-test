@@ -8,3 +8,12 @@ swe/
 data/runs.json
 data/workbench-state.json
 *.log
+scripts/data/longbench2.jsonl
+scripts/data/livecodebench.jsonl
+scripts/data/humanevalplus.jsonl
+scripts/data/ds1000.jsonl
+server.log
+scripts/data/MMLU-Pro.jsonl
+scripts/data/aime_2025.jsonl
+scripts/data/gpqa_diamond_mc.jsonl
+scripts/data/mbppplus.jsonl
