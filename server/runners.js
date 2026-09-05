@@ -149,20 +149,38 @@ function buildLcbFunctionalScript(code, tests, entry) {
   ].join('\n');
 }
 
-/** Judge response -> per-problem verdict + human-readable failure detail. */
-function judgeVerdict(judgeRes) {
-  if (!judgeRes || typeof judgeRes !== 'object') return { passed: false, detail: 'no judge response' };
-  if (judgeRes.compile_error) return { passed: false, detail: 'compile error: ' + judgeRes.compile_error };
+/** Map a judge failure detail to a short, human-readable reason. */
+function judgeReason(detail, kind) {
+  const d = String(detail || '');
+  if (d.includes('[TIMEOUT]')) return '超时（时间限制内未运行完成）';
+  // DS-1000 harness: the final `assert exec_test(result, expected)` only fires
+  // when the solution ran to completion and produced a mismatching result.
+  if (/AssertionError/.test(d) && /exec_test|test_execution/.test(d)) return '运行完成，但结果与参考不一致（答案错误）';
+  if (/^\s*rc=\d+ got=/.test(d)) {
+    const m = d.match(/got=([\s\S]*?) expected=/);
+    return m && m[1].trim() ? '输出与期望不一致' : '无输出（可能异常退出）';
+  }
+  const errLine = d.match(/(AssertionError|ValueError|TypeError|KeyError|NameError|IndexError|AttributeError|RuntimeError|ImportError|ModuleNotFoundError|ZeroDivisionError|OverflowError|MemoryError|RecursionError)(?::[^\n]*)?/);
+  if (errLine) return '运行异常：' + errLine[0].slice(0, 140);
+  const failedTest = d.match(/failed test: [^\n]*/);
+  if (failedTest) return '运行异常：' + failedTest[0].slice(0, 140);
+  if (/^rc=-?\d+/.test(d)) return '运行异常退出';
+  return '测试未通过';
+}
+
+/** Judge response -> per-problem verdict + classified reason + raw detail. */
+function judgeVerdict(judgeRes, kind) {
+  if (!judgeRes || typeof judgeRes !== 'object') return { passed: false, reason: '判题服务无响应', detail: '' };
+  if (judgeRes.compile_error) return { passed: false, reason: '代码语法错误（输出可能不完整或混入了非代码文本）', detail: judgeRes.compile_error };
   const failed = (judgeRes.results || []).find((r) => !r.passed);
-  return {
-    passed: Boolean(judgeRes.all_passed),
-    detail: failed ? String(failed.detail || 'test failed').slice(0, 500) : '',
-  };
+  if (!failed) return { passed: Boolean(judgeRes.all_passed), reason: '', detail: '' };
+  const detail = String(failed.detail || '').slice(0, 500);
+  return { passed: false, reason: judgeReason(detail, kind), detail };
 }
 
 module.exports = {
   readJsonl, extractCode,
   buildLongBenchPrompt, buildHumanEvalPrompt, buildMbppPrompt,
   buildLiveCodeBenchPrompt, buildDs1000Prompt,
-  buildDs1000Script, buildLcbFunctionalScript, judgeVerdict,
+  buildDs1000Script, buildLcbFunctionalScript, judgeVerdict, judgeReason,
 };

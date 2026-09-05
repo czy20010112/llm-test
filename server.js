@@ -7,7 +7,7 @@ const {
   readJsonl, extractCode,
   buildLongBenchPrompt, buildHumanEvalPrompt, buildMbppPrompt,
   buildLiveCodeBenchPrompt, buildDs1000Prompt,
-  buildDs1000Script, buildLcbFunctionalScript, judgeVerdict,
+  buildDs1000Script, buildLcbFunctionalScript, judgeVerdict, judgeReason,
 } = require('./server/runners');
 
 const app = express();
@@ -222,6 +222,17 @@ function logLine(run, line) {
   if (run.currentEntryLog) run.currentEntryLog.push(line);
 }
 
+// One-line per-problem verdict for code tasks: classified reason + model output snippet,
+// so failures read as answers ("wrong result", "timeout") instead of raw tracebacks.
+function logCodeVerdict(run, model, task, qi, count, verdict, modelText) {
+  if (verdict.passed) {
+    logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${count}：通过`);
+  } else {
+    const snippet = String(modelText || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+    logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${count}：未通过（${verdict.reason}）${snippet ? `｜模型输出：${snippet}` : ''}`);
+  }
+}
+
 // The scorer is deliberately strict: reasoning without final-answer evidence is unknown, never incorrect.
 async function measure(run, b, model, task, cfgT = {}) {
   if (task.kind === 'smoke') {
@@ -265,9 +276,9 @@ async function measure(run, b, model, task, cfgT = {}) {
         const code = extractCode(r.text);
         const verdict = judgeVerdict(await judgeRun({
           mode: 'tests', code, entry_point: entry, test_code: q.test, timeout: 15,
-        }));
+        }), task.kind);
         tally(verdict.passed ? 'correct' : 'incorrect');
-        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdict.passed ? '通过' : '未通过'}${verdict.detail ? `（${verdict.detail}）` : ''}`);
+        logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else if (task.kind === 'livecodebench') {
         const r = await chat(b, model, buildLiveCodeBenchPrompt(q), { max_tokens: outputLimit, runId: run.id });
         const code = extractCode(r.text);
@@ -275,22 +286,22 @@ async function measure(run, b, model, task, cfgT = {}) {
         if (q.mode === 'functional') {
           verdict = judgeVerdict(await judgeRun({
             mode: 'script', code: buildLcbFunctionalScript(code, q.tests, q.entry), timeout: 10,
-          }));
+          }), 'livecodebench');
         } else {
           verdict = judgeVerdict(await judgeRun({
             mode: 'stdin', code, test_pairs: q.tests.map((t) => ({ input: t.i, expected: t.o })), timeout: 6,
-          }));
+          }), 'livecodebench');
         }
         tally(verdict.passed ? 'correct' : 'incorrect');
-        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdict.passed ? '通过' : '未通过'}${verdict.detail ? `（${verdict.detail}）` : ''}`);
+        logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else if (task.kind === 'ds1000') {
         const r = await chat(b, model, buildDs1000Prompt(q), { max_tokens: outputLimit, runId: run.id });
         const solution = extractCode(r.text, { solutionMarkers: true });
         const verdict = judgeVerdict(await judgeRun({
-          mode: 'script', code: buildDs1000Script(q.code_context, solution), timeout: 30,
-        }));
+          mode: 'script', code: buildDs1000Script(q.code_context, solution), timeout: 60,
+        }), 'ds1000');
         tally(verdict.passed ? 'correct' : 'incorrect');
-        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdict.passed ? '通过' : '未通过'}${verdict.detail ? `（${verdict.detail}）` : ''}`);
+        logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else {
         throw new Error(`未实现的测试类型：${task.kind}`);
       }
