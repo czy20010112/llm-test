@@ -74,16 +74,40 @@ app.get('/api/preflight', async (req, res) => {
   });
 });
 
+// Model entries are stored as {id, name, description} only — llama-swap returns
+// large capability objects, and older builds once cached them verbatim, which made
+// object values leak into run requests (llama-swap 404 "no router for requested model").
+function normalizeModelList(models) {
+  return (Array.isArray(models) ? models : [])
+    .map((m) => {
+      if (typeof m === 'string') return { id: m };
+      if (m && typeof m === 'object' && (m.id || m.model || m.name)) {
+        return { id: String(m.id || m.model || m.name), name: m.name ? String(m.name) : undefined, description: m.description ? String(m.description) : undefined };
+      }
+      return null;
+    })
+    .filter((m) => m && m.id);
+}
+
 function publicProfile(profile) { const { key, ...safe } = profile || {}; return { ...safe, hasKey: Boolean(key) }; }
-app.get('/api/profiles', (req, res) => res.json({ profiles: state.profiles.map(publicProfile), models: state.models }));
+app.get('/api/profiles', (req, res) => res.json({ profiles: state.profiles.map(publicProfile), models: normalizeModelList(state.models) }));
 app.post('/api/profiles', (req, res) => {
   const p = { ...req.body, id: req.body.id || 'default', updatedAt: new Date().toISOString() };
   if (!req.body.rememberKey) delete p.key;
   const i = state.profiles.findIndex((x) => x.id === p.id);
   if (i >= 0) state.profiles[i] = p; else state.profiles.push(p);
-  if (Array.isArray(p.models)) state.models = p.models;
+  if (Array.isArray(p.models)) state.models = normalizeModelList(p.models);
   saveState();
   res.json(publicProfile(p));
+});
+
+app.delete('/api/results/:id', (req, res) => {
+  const run = runs.get(req.params.id);
+  if (!run) return res.status(404).json({ error: 'not found' });
+  if (run.status === 'running') return res.status(409).json({ error: '正在运行的评测请先"中断"，结束后再删除' });
+  runs.delete(req.params.id);
+  saveRuns();
+  res.json({ ok: true });
 });
 
 app.get('/api/comparisons', (req, res) => res.json(state.comparisons));

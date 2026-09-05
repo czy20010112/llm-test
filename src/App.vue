@@ -61,7 +61,7 @@ async function fetchModels() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ endpoint: cfg.value.endpoint, key: cfg.value.key }),
     });
-    models.value = (body.data || []).map((m: any) => m.id);
+    models.value = (body.data || []).map((m: any) => ({ id: String(m.id), name: m.name ? String(m.name) : undefined, description: m.description ? String(m.description) : undefined }));
     flash('ok', `已获取 ${models.value.length} 个模型`);
   } catch (e: any) {
     flash('err', '获取模型失败：' + e.message);
@@ -73,7 +73,7 @@ async function fetchModels() {
 let timer: number | undefined;
 onMounted(async () => {
   await Promise.all([refreshPreflight(), refreshTasks(), refreshRuns()]);
-  // restore the server-cached model list so 新建评测 works without re-fetching
+  // restore the server-cached model list (already normalized to {id,name,description})
   try {
     const p = await api('/api/profiles');
     if (Array.isArray(p.models) && p.models.length) models.value = p.models;
@@ -96,15 +96,24 @@ function statusText(s: string) {
   return ({ running: '运行中', done: '已完成', error: '有错误', partial: '已中断', crashed: '崩溃' } as Record<string, string>)[s] || s;
 }
 
-// ---------- 新建评测：模型（逐栏下拉，加号追加） ----------
+// ---------- 新建评测：模型（逐栏下拉，选中后自动拉出下一栏） ----------
 const loadingModels = ref(false);
 const modelRows = ref<string[]>(['']);
-const canAddModel = computed(() => modelRows.value.length > 0 && modelRows.value[modelRows.value.length - 1] !== '');
 const selectedModels = computed(() => modelRows.value.filter(Boolean));
+
+function onModelPicked(i: number) {
+  // fill the last row -> grow one empty row below; never keep two empty rows
+  if (i === modelRows.value.length - 1 && modelRows.value[i]) modelRows.value.push('');
+}
+function removeModelRow(i: number) {
+  modelRows.value.splice(i, 1);
+  if (!modelRows.value.length) modelRows.value.push('');
+  const last = modelRows.value.length - 1;
+  if (modelRows.value[last]) modelRows.value.push('');
+}
 
 // ---------- 新建评测：测试项目表格（逐行下拉 + 每行参数） ----------
 const taskRows = ref([{ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' }]);
-const canAddTask = computed(() => taskRows.value.length > 0 && taskRows.value[taskRows.value.length - 1].task !== '');
 const openDd = ref(-1);
 const judgeKinds = ['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000'];
 const taskById = (id: string) => tasks.value.find((t) => t.id === id);
@@ -115,6 +124,13 @@ function closeMenus(e: Event) {
 function pickTask(i: number, id: string) {
   taskRows.value[i].task = id;
   openDd.value = -1;
+  if (i === taskRows.value.length - 1) taskRows.value.push({ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' });
+}
+function removeTaskRow(i: number) {
+  taskRows.value.splice(i, 1);
+  if (!taskRows.value.length) taskRows.value.push({ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' });
+  const last = taskRows.value[taskRows.value.length - 1];
+  if (last.task) taskRows.value.push({ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' });
 }
 
 async function submitRun() {
@@ -153,6 +169,16 @@ async function cancelRun(id: string) {
   } catch (e: any) { flash('err', e.message); }
 }
 
+async function deleteResult(id: string) {
+  if (!window.confirm('确定删除这条测试结果？删除后不可恢复。')) return;
+  try {
+    await api(`/api/results/${id}`, { method: 'DELETE' });
+    comparePicks.value = comparePicks.value.filter((x) => x !== id);
+    flash('ok', '已删除');
+    refreshRuns();
+  } catch (e: any) { flash('err', e.message); }
+}
+
 // ---------- 结果 ----------
 function scoreOf(row: any) {
   const a = row.average || {};
@@ -170,28 +196,36 @@ function scoreDetail(row: any) {
   return parts.join(' / ');
 }
 
-// ---------- 对比分析：列 = 测试×模型，行 = 选入的运行 ----------
+// ---------- 对比分析：行=测试项目，列=结果名称×模型 ----------
 const comparePicks = ref<string[]>([]);
 const compareCols = computed(() => {
-  const taskOrder = new Map(tasks.value.map((t, i) => [t.name, i]));
-  const seen = new Map<string, { task: string; model: string; taskIdx: number; order: number }>();
-  let order = 0;
+  const cols: { runId: string; runName: string; model: string }[] = [];
+  const seen = new Set<string>();
   for (const run of finishedRuns.value) {
     if (!comparePicks.value.includes(run.id)) continue;
-    for (const row of run.rows || []) {
-      const key = `${row.task}\u0000${row.model}`;
-      if (!seen.has(key)) seen.set(key, { task: row.task, model: row.model, taskIdx: taskOrder.get(row.task) ?? 99, order: order++ });
+    for (const model of run.models || []) {
+      const key = `${run.id}\u0000${model}`;
+      if (!seen.has(key)) { seen.add(key); cols.push({ runId: run.id, runName: run.name || run.id, model }); }
     }
   }
-  return [...seen.values()].sort((a, b) => a.taskIdx - b.taskIdx || a.order - b.order);
+  return cols;
 });
-function compareCell(run: any, col: { task: string; model: string }) {
-  const row = (run.rows || []).find((r: any) => r.task === col.task && r.model === col.model);
-  if (!row) return null;
-  return { score: row.average?.score, detail: scoreDetail(row) };
+const compareRows = computed(() => {
+  const taskOrder = new Map(tasks.value.map((t, i) => [t.name, i]));
+  const names = new Set<string>();
+  for (const run of finishedRuns.value) {
+    if (!comparePicks.value.includes(run.id)) continue;
+    for (const row of run.rows || []) names.add(row.task);
+  }
+  return [...names].sort((a, b) => (taskOrder.get(a) ?? 99) - (taskOrder.get(b) ?? 99));
+});
+function compareCell(task: string, col: { runId: string; model: string }) {
+  const run = finishedRuns.value.find((r) => r.id === col.runId);
+  const row = run && (run.rows || []).find((r: any) => r.task === task && r.model === col.model);
+  return row ? { score: row.average?.score, detail: scoreDetail(row) } : null;
 }
-function cellScore(run: any, col: { task: string; model: string }): string {
-  const cell = compareCell(run, col);
+function cellScore(task: string, col: { runId: string; model: string }): string {
+  const cell = compareCell(task, col);
   return cell && cell.score != null ? (cell.score * 100).toFixed(1) + '%' : '—';
 }
 
@@ -290,23 +324,27 @@ async function saveProfile() {
           </div>
 
           <fieldset class="panel">
-            <legend>模型（自上而下即执行顺序）</legend>
+            <legend>模型（自上而下即执行顺序，选中后自动出现下一栏）</legend>
             <div class="rows-list">
               <div v-for="(m, i) in modelRows" :key="`m${i}`" class="row-line">
                 <span class="idx">{{ i + 1 }}</span>
-                <select v-model="modelRows[i]" class="input wide" :aria-label="`模型 ${i + 1}`">
+                <select v-model="modelRows[i]" class="input wide" :aria-label="`模型 ${i + 1}`" @change="onModelPicked(i)">
                   <option value="" disabled>选择模型…</option>
-                  <option v-for="opt in models" :key="opt" :value="opt">{{ opt }}</option>
+                  <option v-for="opt in models" :key="opt.id" :value="opt.id">
+                    {{ opt.id }} - {{ opt.name || '—' }}{{ opt.description ? ` - ${opt.description}` : '' }}
+                  </option>
                 </select>
-                <button v-if="modelRows.length > 1" class="x" type="button" :aria-label="`移除模型 ${i + 1}`" @click="modelRows.splice(i, 1)">×</button>
+                <button
+                  v-if="!(i === modelRows.length - 1 && !m)" class="x" type="button"
+                  :aria-label="`移除模型 ${i + 1}`" @click="removeModelRow(i)"
+                >×</button>
               </div>
-              <button v-if="canAddModel" class="btn ghost add" type="button" @click="modelRows.push('')">＋ 添加模型</button>
               <p v-if="!models.length" class="soft">模型列表为空 — 请先到"环境设置"填写端点并获取模型。</p>
             </div>
           </fieldset>
 
           <fieldset class="panel">
-            <legend>测试项目（每行一项，参数可留空用默认值）</legend>
+            <legend>测试项目（每行一项，参数可留空用默认值，选中后自动出现下一行）</legend>
             <table class="task-table">
               <thead>
                 <tr>
@@ -341,11 +379,15 @@ async function saveProfile() {
                   <td class="c-note soft">
                     <template v-if="taskById(r.task)">{{ taskById(r.task).ability }} · {{ judgeKinds.includes(taskById(r.task).kind) ? '需要判题沙箱' : '无需沙箱' }}</template>
                   </td>
-                  <td class="c-x"><button v-if="taskRows.length > 1" class="x" type="button" :aria-label="`移除测试 ${i + 1}`" @click="taskRows.splice(i, 1)">×</button></td>
+                  <td class="c-x">
+                    <button
+                      v-if="!(i === taskRows.length - 1 && !r.task)" class="x" type="button"
+                      :aria-label="`移除测试 ${i + 1}`" @click="removeTaskRow(i)"
+                    >×</button>
+                  </td>
                 </tr>
               </tbody>
             </table>
-            <button v-if="canAddTask" class="btn ghost add" type="button" @click="taskRows.push({ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' })">＋ 添加测试项目</button>
           </fieldset>
 
           <div class="actions">
@@ -388,6 +430,7 @@ async function saveProfile() {
               <button class="btn ghost" :class="{ on: comparePicks.includes(r.id) }" @click="comparePicks.includes(r.id) ? comparePicks.splice(comparePicks.indexOf(r.id), 1) : comparePicks.push(r.id)">
                 {{ comparePicks.includes(r.id) ? '已选入对比' : '选入对比' }}
               </button>
+              <button class="btn ghost danger" @click="deleteResult(r.id)">删除</button>
             </header>
             <table class="table">
               <thead><tr><th>模型</th><th>测试</th><th>得分</th><th>明细</th><th>重复</th></tr></thead>
@@ -408,26 +451,26 @@ async function saveProfile() {
           </article>
         </template>
 
-        <!-- 对比分析：行=选入的运行，列=测试×模型 -->
+        <!-- 对比分析：行=测试项目，列=结果名称×模型 -->
         <template v-else-if="active === 'compare'">
-          <p v-if="!comparePicks.length" class="soft">在"历史记录"中把若干次运行"选入对比"，这里会按 测试×模型 并排列出得分。</p>
+          <p v-if="!comparePicks.length" class="soft">在"历史记录"中把若干次运行"选入对比"，这里会按测试项目逐行对比每个模型的表现。</p>
           <table v-else class="table compare">
             <thead>
               <tr>
-                <th class="c-run">项目</th>
-                <th v-for="col in compareCols" :key="col.task + col.model">
-                  <span class="col-task">{{ col.task }}</span>
+                <th class="c-run">测试项目</th>
+                <th v-for="col in compareCols" :key="col.runId + col.model">
+                  <span class="col-task">{{ col.runName }}</span>
                   <span class="col-model soft">{{ col.model }}</span>
                 </th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(run, ri) in finishedRuns.filter(r => comparePicks.includes(r.id))" :key="run.id">
-                <td class="c-run"><strong>项目{{ ri + 1 }}</strong><br /><small class="soft">{{ run.name }}</small></td>
-                <td v-for="col in compareCols" :key="col.task + col.model">
-                  <template v-if="compareCell(run, col)">
-                    <strong>{{ cellScore(run, col) }}</strong>
-                    <br /><small class="soft">{{ compareCell(run, col)!.detail }}</small>
+              <tr v-for="task in compareRows" :key="task">
+                <td class="c-run"><strong>{{ task }}</strong></td>
+                <td v-for="col in compareCols" :key="col.runId + col.model">
+                  <template v-if="compareCell(task, col)">
+                    <strong>{{ cellScore(task, col) }}</strong>
+                    <br /><small class="soft">{{ compareCell(task, col)!.detail }}</small>
                   </template>
                   <template v-else>—</template>
                 </td>

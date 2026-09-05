@@ -11,8 +11,16 @@ test('navigation switches views', async ({ page }) => {
 test('composer: model dropdown rows and benchmark task table', async ({ page }) => {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await page.getByRole('button', { name: '新建评测' }).click();
-  // 模型逐栏下拉
-  await expect(page.getByRole('combobox').first()).toBeVisible();
+  // 模型逐栏下拉：默认一行，选中后自动出现第二行（无添加按钮）
+  const first = page.getByRole('combobox').first();
+  await expect(first).toBeVisible();
+  await expect(page.getByRole('button', { name: /添加模型/ })).toHaveCount(0);
+  const n0 = await page.getByRole('combobox').count();
+  const value = await first.locator('option:not([value=""])').first().getAttribute('value');
+  if (value) {
+    await first.selectOption(value);
+    await expect(page.getByRole('combobox')).toHaveCount(n0 + 1);
+  }
   // 测试项目下拉（打开后能看到全部基准与备注）
   await page.getByRole('button', { name: '选择测试项目…' }).click();
   await expect(page.getByText('HumanEval+（代码生成）')).toBeVisible();
@@ -20,11 +28,23 @@ test('composer: model dropdown rows and benchmark task table', async ({ page }) 
   await expect(page.getByText('DS-1000（数据科学编程）')).toBeVisible();
   await expect(page.getByText('LongBench v2（长上下文）')).toBeVisible();
   await page.getByText('LongBench v2（长上下文）').click();
-  // 选中后表单里只显示名称，备注列显示领域与沙箱信息
-  await expect(page.locator('.dd-toggle')).toContainText('LongBench v2');
+  // 选中后表单里只显示名称，备注列显示领域与沙箱信息；第二行自动出现
+  await expect(page.locator('.task-table tbody tr:first-child .dd-toggle')).toContainText('LongBench v2');
   await expect(page.locator('.task-table td.c-note').first()).toContainText('超长上下文');
+  await expect(page.locator('.task-table tbody tr')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: /添加测试项目/ })).toHaveCount(0);
   // 端点设置不在新建评测里
   await expect(page.locator('[data-view="new"]')).not.toContainText('推理端点');
+});
+
+test('history offers per-run delete', async ({ page }) => {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: '历史记录' }).click();
+  const card = page.locator('.run-card').first();
+  await expect(card).toBeVisible();
+  await expect(card.getByRole('button', { name: '删除' })).toBeVisible();
+  page.once('dialog', (d) => d.dismiss());
+  await card.getByRole('button', { name: '删除' }).click();
 });
 
 test('settings offers endpoint + model fetch', async ({ page }) => {
