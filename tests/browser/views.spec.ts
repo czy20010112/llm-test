@@ -54,13 +54,19 @@ test('settings offers endpoint + model fetch', async ({ page }) => {
 });
 
 test('queue shows only running runs; history lists finished runs', async ({ page }) => {
+  // mock the runs feed so live status transitions cannot race the assertions
+  await page.route('**/api/runs', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([
+      { id: 'r1', name: '运行中的评测', status: 'running', models: ['m1'], tasks: ['t1'], progress: { modelIndex: 0 }, log: ['line1'], rows: [] },
+      { id: 'r2', name: '已完成的评测', status: 'done', models: ['m1'], tasks: ['t1'], log: [], rows: [{ model: 'm1', task: 'GPQA Diamond（缓存题库）', repeat: 1, average: { score: 0.5, correct: 1, total: 2 }, log: [] }] },
+    ]),
+  }));
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await page.getByRole('button', { name: '历史记录' }).click();
-  await expect(page.locator('.run-card').first()).toBeVisible();
   await page.getByRole('button', { name: '运行队列' }).click();
-  const cards = page.locator('.run-card');
-  const n = await cards.count();
-  for (let i = 0; i < n; i++) {
-    await expect(cards.nth(i).locator('.badge')).toHaveClass(/running/);
-  }
+  await expect(page.getByText('运行中的评测')).toBeVisible();
+  await expect(page.getByText('已完成的评测')).toBeHidden();
+  await page.getByRole('button', { name: '历史记录' }).click();
+  await expect(page.getByText('已完成的评测')).toBeVisible();
+  await expect(page.getByText('运行中的评测')).toBeHidden();
 });

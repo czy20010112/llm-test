@@ -88,7 +88,9 @@ onBeforeUnmount(() => {
 // auto-scroll open queue logs to the bottom as they grow
 watch(() => runs.value.map((r) => (r.log || []).length).join(','), () => {
   nextTick(() => {
-    document.querySelectorAll<HTMLElement>('.auto-scroll').forEach((el) => { el.scrollTop = el.scrollHeight; });
+    document.querySelectorAll<HTMLElement>('.auto-scroll').forEach((el) => {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    });
   });
 });
 
@@ -169,14 +171,39 @@ async function cancelRun(id: string) {
   } catch (e: any) { flash('err', e.message); }
 }
 
-async function deleteResult(id: string) {
-  if (!window.confirm('确定删除这条测试结果？删除后不可恢复。')) return;
+// ---------- 删除确认（主题化弹窗，Enter=确认 / Esc=取消） ----------
+const pendingDelete = ref<any>(null);
+const confirmBtn = ref<HTMLButtonElement | null>(null);
+
+function askDelete(run: any) { pendingDelete.value = run; }
+async function confirmDelete() {
+  const run = pendingDelete.value;
+  if (!run) return;
   try {
-    await api(`/api/results/${id}`, { method: 'DELETE' });
-    comparePicks.value = comparePicks.value.filter((x) => x !== id);
-    flash('ok', '已删除');
+    await api(`/api/results/${run.id}`, { method: 'DELETE' });
+    comparePicks.value = comparePicks.value.filter((x) => x !== run.id);
+    flash('ok', `已删除「${run.name}」`);
     refreshRuns();
   } catch (e: any) { flash('err', e.message); }
+  pendingDelete.value = null;
+}
+function onModalKey(e: KeyboardEvent) {
+  if (!pendingDelete.value) return;
+  if (e.key === 'Enter') { e.preventDefault(); confirmDelete(); }
+  else if (e.key === 'Escape') { e.preventDefault(); pendingDelete.value = null; }
+}
+watch(pendingDelete, (v) => {
+  if (v) {
+    window.addEventListener('keydown', onModalKey);
+    nextTick(() => confirmBtn.value?.focus());
+  } else {
+    window.removeEventListener('keydown', onModalKey);
+  }
+});
+
+function toggleCompare(id: string) {
+  const i = comparePicks.value.indexOf(id);
+  if (i >= 0) comparePicks.value.splice(i, 1); else comparePicks.value.push(id);
 }
 
 // ---------- 结果 ----------
@@ -278,7 +305,8 @@ async function saveProfile() {
         <h1 class="view-title">{{ activeView.label }}</h1>
         <p v-if="notice" class="notice" :class="notice.kind">{{ notice.text }}</p>
       </header>
-      <section class="view-body" :data-view="active">
+      <Transition name="view" mode="out-in">
+        <section class="view-body" :data-view="active" :key="active">
 
         <!-- 总览 -->
         <template v-if="active === 'overview'">
@@ -375,7 +403,7 @@ async function saveProfile() {
                   <td><input v-model="r.limit" class="input num" type="number" min="1" :placeholder="taskById(r.task)?.defaultLimit || '全部'" /></td>
                   <td><input v-model="r.repeats" class="input num" type="number" min="1" placeholder="1" /></td>
                   <td><input v-model="r.concurrency" class="input num" type="number" min="1" placeholder="1" /></td>
-                  <td><input v-model="r.maxTokens" class="input num" type="number" min="256" placeholder="4096" /></td>
+                  <td><input v-model="r.maxTokens" class="input num" type="number" min="256" :placeholder="taskById(r.task)?.defaultMaxTokens || 4096" /></td>
                   <td class="c-note soft">
                     <template v-if="taskById(r.task)">{{ taskById(r.task).ability }} · {{ judgeKinds.includes(taskById(r.task).kind) ? '需要判题沙箱' : '无需沙箱' }}</template>
                   </td>
@@ -427,10 +455,12 @@ async function saveProfile() {
               <strong>{{ r.name }}</strong>
               <span class="badge" :class="r.status">{{ statusText(r.status) }}</span>
               <span class="soft">{{ new Date(r.startedAt).toLocaleString() }}</span>
-              <button class="btn ghost" :class="{ on: comparePicks.includes(r.id) }" @click="comparePicks.includes(r.id) ? comparePicks.splice(comparePicks.indexOf(r.id), 1) : comparePicks.push(r.id)">
-                {{ comparePicks.includes(r.id) ? '已选入对比' : '选入对比' }}
-              </button>
-              <button class="btn ghost danger" @click="deleteResult(r.id)">删除</button>
+              <span class="head-actions">
+                <button class="btn act-btn" :class="{ danger: true }" @click="askDelete(r)">删除</button>
+                <button class="btn act-btn primary-ghost" :class="{ on: comparePicks.includes(r.id) }" @click="toggleCompare(r.id)">
+                  {{ comparePicks.includes(r.id) ? '已选入' : '选入对比' }}
+                </button>
+              </span>
             </header>
             <table class="table">
               <thead><tr><th>模型</th><th>测试</th><th>得分</th><th>明细</th><th>重复</th></tr></thead>
@@ -527,7 +557,23 @@ async function saveProfile() {
           </div>
         </template>
       </section>
+      </Transition>
     </main>
+
+    <!-- 删除确认弹窗 -->
+    <Transition name="fade">
+      <div v-if="pendingDelete" class="modal-backdrop" @click.self="pendingDelete = null">
+        <div class="modal" role="alertdialog" aria-modal="true" aria-label="确认删除">
+          <h3>删除这条测试结果？</h3>
+          <p class="modal-name">「{{ pendingDelete.name }}」</p>
+          <p class="soft">删除后不可恢复。按 Enter 确认，Esc 取消。</p>
+          <div class="modal-actions">
+            <button class="btn" type="button" @click="pendingDelete = null">取消</button>
+            <button ref="confirmBtn" class="btn primary danger-solid" type="button" @click="confirmDelete">删除</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -539,6 +585,10 @@ async function saveProfile() {
 }
 
 .sidenav {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -692,4 +742,56 @@ summary { cursor: pointer; color: var(--color-ink-soft); font-size: 13px; }
 .dot.big { width: 12px; height: 12px; }
 .dot.ok { background: var(--color-success); }
 .dot.bad { background: var(--color-danger); }
+.sidenav-foot .dot { animation: soft-pulse 2.4s ease-in-out infinite; }
+
+/* 历史卡片操作按钮：固定尺寸、右侧对齐，切换文案不改变布局 */
+.head-actions { margin-left: auto; display: flex; gap: 8px; flex: none; }
+.act-btn { width: 88px; text-align: center; padding: 7px 0; }
+.act-btn.danger { color: var(--color-danger); border-color: var(--color-danger); background: transparent; }
+.act-btn.danger:hover { background: var(--color-coral-soft); }
+.act-btn.primary-ghost { color: var(--color-teal); border-color: var(--color-teal-line); background: transparent; }
+.act-btn.primary-ghost:hover { background: var(--color-teal-soft); }
+.act-btn.primary-ghost.on { background: var(--color-teal); color: var(--color-teal-on); border-color: var(--color-teal); }
+
+/* 删除确认弹窗 */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: color-mix(in srgb, #14181a 55%, transparent);
+  display: grid; place-items: center;
+}
+.modal {
+  width: min(420px, 90vw);
+  background: var(--color-paper-raised); color: var(--color-ink);
+  border: 1px solid var(--color-line); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card); padding: 22px 24px;
+}
+.modal h3 { margin: 0 0 6px; font-family: var(--font-display); font-size: 17px; }
+.modal-name { margin: 4px 0; font-weight: 700; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.danger-solid { background: var(--color-danger) !important; border-color: var(--color-danger) !important; color: #fff !important; }
+.danger-solid:hover { filter: brightness(1.08); }
+
+/* 动效（参考 Precision Lab：短促、克制的缓动） */
+.view-enter-active { transition: opacity .22s cubic-bezier(.16, 1, .3, 1), transform .22s cubic-bezier(.16, 1, .3, 1); }
+.view-leave-active { transition: opacity .12s ease; }
+.view-enter-from { opacity: 0; transform: translateY(6px); }
+.view-leave-to { opacity: 0; }
+
+.fade-enter-active, .fade-leave-active { transition: opacity .16s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+.card, .panel, .run-card { transition: transform .15s ease, box-shadow .15s ease; }
+.card:hover { transform: translateY(-1px); box-shadow: 0 3px 6px light-dark(rgb(34 39 43 / 10%), rgb(0 0 0 / 45%)), 0 8px 20px light-dark(rgb(34 39 43 / 8%), rgb(0 0 0 / 35%)); }
+
+.btn:active { transform: scale(.97); }
+.badge.running { animation: soft-pulse 1.6s ease-in-out infinite; }
+@keyframes soft-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-enter-active, .view-leave-active, .fade-enter-active, .fade-leave-active { transition: none; }
+  .badge.running, .sidenav-foot .dot { animation: none; }
+}
 </style>

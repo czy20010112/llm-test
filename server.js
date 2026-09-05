@@ -51,14 +51,14 @@ function saveState() {
 // defaultLimit: sampled questions when the caller does not pass a limit
 const tasks = [
   { id: 'smoke_speed', name: '连通性与吐字速度', ability: '实际可用性 / 首 token 与生成速度', kind: 'smoke' },
-  { id: 'gpqa_cached', name: 'GPQA Diamond（缓存题库）', ability: '高难度科学推理与知识整合', kind: 'gpqa', file: 'gpqa_diamond_mc.jsonl', defaultLimit: 198 },
-  { id: 'aime_cached', name: 'AIME 2025（缓存题库）', ability: '数学竞赛推理与精确计算', kind: 'aime', file: 'aime_2025.jsonl', defaultLimit: 30 },
-  { id: 'mmlu_pro_cached', name: 'MMLU-Pro（缓存题库）', ability: '广泛知识、学科理解与选择题稳健性', kind: 'mmlu', file: 'MMLU-Pro.jsonl', defaultLimit: 100 },
-  { id: 'longbench2', name: 'LongBench v2（长上下文）', ability: '超长上下文检索、长文推理与指令跟随', kind: 'longbench2', file: 'longbench2.jsonl', defaultLimit: 30 },
-  { id: 'humanevalplus', name: 'HumanEval+（代码生成）', ability: '函数级 Python 代码生成的正确性（增强测试集）', kind: 'humanevalplus', file: 'humanevalplus.jsonl', defaultLimit: 40 },
-  { id: 'mbppplus', name: 'MBPP+（代码生成）', ability: '基础编程任务代码生成的正确性（增强测试集）', kind: 'mbppplus', file: 'mbppplus.jsonl', defaultLimit: 40 },
-  { id: 'livecodebench', name: 'LiveCodeBench（竞赛编程）', ability: '竞赛级算法编程（stdin / 函数式，隐藏测试）', kind: 'livecodebench', file: 'livecodebench.jsonl', defaultLimit: 30 },
-  { id: 'ds1000', name: 'DS-1000（数据科学编程）', ability: 'NumPy/Pandas/SciPy/Sklearn/Matplotlib 真实数据科学任务', kind: 'ds1000', file: 'ds1000.jsonl', defaultLimit: 40 },
+  { id: 'gpqa_cached', name: 'GPQA Diamond（缓存题库）', ability: '高难度科学推理与知识整合', kind: 'gpqa', file: 'gpqa_diamond_mc.jsonl', defaultLimit: 198, defaultMaxTokens: 8192 },
+  { id: 'aime_cached', name: 'AIME 2025（缓存题库）', ability: '数学竞赛推理与精确计算', kind: 'aime', file: 'aime_2025.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
+  { id: 'mmlu_pro_cached', name: 'MMLU-Pro（缓存题库）', ability: '广泛知识、学科理解与选择题稳健性', kind: 'mmlu', file: 'MMLU-Pro.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'longbench2', name: 'LongBench v2（长上下文）', ability: '超长上下文检索、长文推理与指令跟随', kind: 'longbench2', file: 'longbench2.jsonl', defaultLimit: 30, defaultMaxTokens: 2048 },
+  { id: 'humanevalplus', name: 'HumanEval+（代码生成）', ability: '函数级 Python 代码生成的正确性（增强测试集）', kind: 'humanevalplus', file: 'humanevalplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
+  { id: 'mbppplus', name: 'MBPP+（代码生成）', ability: '基础编程任务代码生成的正确性（增强测试集）', kind: 'mbppplus', file: 'mbppplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
+  { id: 'livecodebench', name: 'LiveCodeBench（竞赛编程）', ability: '竞赛级算法编程（stdin / 函数式，隐藏测试）', kind: 'livecodebench', file: 'livecodebench.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
+  { id: 'ds1000', name: 'DS-1000（数据科学编程）', ability: 'NumPy/Pandas/SciPy/Sklearn/Matplotlib 真实数据科学任务', kind: 'ds1000', file: 'ds1000.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
 ];
 const CODE_KINDS = new Set(['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000']);
 
@@ -268,10 +268,20 @@ async function measure(run, b, model, task, cfgT = {}) {
 
   const { rows: sample, total } = readJsonl(task.file, taskLimit(cfgT, task));
   let correct = 0, incorrect = 0, unknown = 0;
-  const outputLimit = Math.min(8192, Math.max(256, Number(cfgT.maxTokens) || 4096));
+  const outputLimit = Math.min(16384, Math.max(256, Number(cfgT.maxTokens) || task.defaultMaxTokens || 4096));
 
-  for (let qi = 0; qi < sample.length && !run.cancelRequested; qi++) {
-    const q = sample[qi];
+  // 并发 N 表示同一测试项目内同时有 N 个题目请求在途（judge 判题也并行）
+  const concurrency = Math.min(16, Math.max(1, Number(cfgT.concurrency) || 1));
+  let cursor = 0;
+  async function qworker() {
+    while (cursor < sample.length && !run.cancelRequested) {
+      const qi = cursor++; // claim before awaiting so parallel workers never share a question
+      await processQuestion(sample[qi], qi);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, sample.length) }, () => qworker()));
+
+  async function processQuestion(q, qi) {
     logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：请求中…`);
     try {
       if (task.kind === 'longbench2') {
