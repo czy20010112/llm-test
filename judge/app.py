@@ -5,7 +5,8 @@ Runs model-generated Python code in restricted subprocesses and scores it.
 Modes:
   stdin : run solution.py per test case with stdin input, compare stdout (LiveCodeBench text tasks)
   tests : concat code + check snippet (HumanEval+ / MBPP+ evalplus style, def check(candidate))
-  file  : write solution.py + test file, run the test file which imports the solution (LiveCodeBench func tasks)
+  file  : write solution.py + test file, run the test file which imports the solution
+  script: run a fully self-contained harness script (DS-1000 / LCB functional harnesses)
 
 Security: this container runs on an internal docker network (no external egress).
 Every executed test gets CPU/memory/filesize/process limits and a wall-clock timeout.
@@ -27,14 +28,14 @@ app = FastAPI(title="llm-test code judge")
 
 DEFAULT_TIMEOUT = 10.0
 MAX_TIMEOUT = 120.0
-MEM_LIMIT = 2 * 1024**3      # 2 GiB address space per test
+MEM_LIMIT = 6 * 1024**3      # address space per test (virtual; scipy+sklearn mapping needs headroom)
 FSIZE_LIMIT = 64 * 1024**2   # 64 MiB max file a test may write
 NPROC_LIMIT = 64             # max processes
 CPU_LIMIT_PAD = 4            # seconds added on top of wall timeout
 
 
 class JudgeRequest(BaseModel):
-    mode: str = Field(pattern="^(stdin|tests|file)$")
+    mode: str = Field(pattern="^(stdin|tests|file|script)$")
     code: str
     entry_point: str | None = None
     test_cases: list[str] | None = None      # stdin mode: "input\x00expected" pairs OR list of check snippets
@@ -125,9 +126,11 @@ def _judge_tests(req: JudgeRequest, workdir: str) -> list[dict]:
     results = []
     for idx, snippet in enumerate(snippets):
         body = req.code + "\n\n" + snippet + "\n"
-        # If the snippet defines check(candidate), invoke it with the module itself.
+        # evalplus-style snippets define check(candidate) without invoking it;
+        # call it with the real entry function (the module object is not callable).
         if "def check(" in snippet:
-            body += "\ncheck(__main__)\n"
+            entry = (req.entry_point or "").strip()
+            body += f"\ncheck({entry})\n" if entry else "\ncheck(__main__)\n"
         path = os.path.join(workdir, f"case_{idx}.py")
         with open(path, "w") as f:
             f.write(body)
@@ -138,6 +141,19 @@ def _judge_tests(req: JudgeRequest, workdir: str) -> list[dict]:
             "detail": "" if ok else f"rc={rc} stderr={err[-400:]}",
         })
     return results
+
+
+def _judge_script(req: JudgeRequest, workdir: str) -> list[dict]:
+    """Run a fully self-contained harness script; exit code 0 == pass."""
+    path = os.path.join(workdir, "script.py")
+    with open(path, "w") as f:
+        f.write(req.code)
+    rc, out, err = _run([sys.executable, "script.py"], workdir, req.timeout)
+    ok = rc == 0
+    return [{
+        "id": 0, "passed": ok,
+        "detail": "" if ok else f"rc={rc} out={out[-300:]!r} stderr={err[-500:]}",
+    }]
 
 
 def _judge_file(req: JudgeRequest, workdir: str) -> list[dict]:
@@ -172,6 +188,8 @@ def judge(req: JudgeRequest):
             results = _judge_stdin(req, workdir)
         elif req.mode == "tests":
             results = _judge_tests(req, workdir)
+        elif req.mode == "script":
+            results = _judge_script(req, workdir)
         else:
             results = _judge_file(req, workdir)
         if req.max_tests and len(results) > req.max_tests:
