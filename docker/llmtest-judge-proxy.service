@@ -1,0 +1,17 @@
+# Forwards WSL localhost 8901 to the pinned judge container IP.
+# The judge container lives on an INTERNAL docker network (zero egress);
+# this forwarder is the only host-side access path. Install with:
+#   cp llmtest-judge-proxy.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now llmtest-judge-proxy
+[Unit]
+Description=llm-test judge forwarder (127.0.0.1:8901 -> 172.18.0.2:8901)
+After=docker.service network.target
+Wants=docker.service
+
+[Service]
+ExecStart=/usr/bin/socat TCP-LISTEN:8901,bind=127.0.0.1,fork,reuseaddr TCP:172.18.0.2:8901
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

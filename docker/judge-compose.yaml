@@ -1,0 +1,34 @@
+# Code judge service for llm-test.
+#
+# The network is INTERNAL: judged code has zero external egress
+# (no default gateway, no NAT — enforced by Docker itself).
+# Port publishing does NOT work on internal networks, so the host
+# reaches the judge via the socat forwarder unit
+# (llmtest-judge-proxy.service): 127.0.0.1:8901 -> 172.18.0.2:8901.
+# The container IP is pinned below so the forwarder stays valid
+# across container recreations.
+name: llm-test-judge
+services:
+  judge:
+    build:
+      context: ../judge
+      dockerfile: Dockerfile
+    image: llmtest/judge:latest
+    container_name: llm-test-judge
+    restart: unless-stopped
+    networks:
+      judge-net:
+        ipv4_address: 172.18.0.2
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
+    mem_limit: 6g
+    cpus: 8
+    pids_limit: 256
+networks:
+  judge-net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.18.0.0/24

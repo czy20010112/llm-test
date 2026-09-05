@@ -1,0 +1,92 @@
+/* Precision Lab design tokens
+ * Warm paper background, deep teal navigation, coral action color,
+ * restrained green success state. Headings: Noto Serif SC / Playfair
+ * Display style serif; controls and dense data: neutral sans stack.
+ * Theme resolution: light / dark via [data-theme], default follows
+ * the system through color-scheme (light-dark()).
+ */
+:root {
+  color-scheme: light dark;
+
+  /* 暖纸底色与墨色 */
+  --color-paper: light-dark(#f6f1e7, #14181a);
+  --color-paper-raised: light-dark(#fbf8f1, #1c2226);
+  --color-ink: light-dark(#22272b, #e8e4da);
+  --color-ink-soft: light-dark(#5a6470, #9aa4ad);
+  --color-line: light-dark(#d8d2c4, #2c343a);
+
+  /* 深青导航 */
+  --color-teal: light-dark(#0f5e5a, #123f3d);
+  --color-teal-strong: light-dark(#0a4744, #0d2f2d);
+  --color-teal-on: light-dark(#f2efe6, #dce8e5);
+  --color-teal-on-soft: light-dark(#b9cfca, #7fa8a2);
+  --color-teal-line: light-dark(#2a7a75, #1e5a56);
+  --color-teal-hover: light-dark(#176e69, #1a4d4a);
+  --color-teal-active: light-dark(#1d7d77, #20605b);
+  --color-teal-soft: light-dark(#e0ece9, #173230);
+
+  /* 珊瑚行动色 */
+  --color-coral: light-dark(#e2593c, #f07a5d);
+  --color-coral-strong: light-dark(#c74a2f, #ff9478);
+  --color-coral-soft: light-dark(#fbe9e3, #3a231d);
+
+  /* 克制的成功绿与危险红 */
+  --color-success: light-dark(#3e7d4f, #6fbf85);
+  --color-success-soft: light-dark(#e2efe5, #1d3325);
+  --color-danger: light-dark(#b3372b, #e06a5c);
+  --color-warn: light-dark(#9a6b15, #d9a441);
+
+  /* 形状、阴影、动效 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --shadow-card: 0 1px 2px light-dark(rgb(34 39 43 / 8%), rgb(0 0 0 / 40%)),
+    0 4px 14px light-dark(rgb(34 39 43 / 6%), rgb(0 0 0 / 30%));
+  --motion-fast: 120ms ease-out;
+  --motion-med: 220ms ease-out;
+
+  /* 字体：大标题衬线（中文用 Noto Serif SC），控件与密集数据无衬线 */
+  --font-display: 'Noto Serif SC', 'Playfair Display', 'Merriweather', serif;
+  --font-body: 'Noto Sans SC', system-ui, 'Segoe UI', sans-serif;
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+}
+
+/* 显式主题：覆盖系统跟随 */
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+/* 基础排版 */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.55;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 尊重减少动态偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

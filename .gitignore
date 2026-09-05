@@ -1,0 +1,10 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+benchmarks/hf-cache/
+benchmarks/raw/
+swe/
+data/runs.json
+data/workbench-state.json
+*.log
