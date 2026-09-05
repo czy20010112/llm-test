@@ -120,9 +120,19 @@ app.delete('/api/runs/:id', (req, res) => {
 app.post('/api/runs', async (req, res) => {
   const b = req.body || {};
   const models = Array.isArray(b.models) ? b.models.filter(Boolean) : [];
-  const selected = Array.isArray(b.tasks) ? b.tasks.filter(Boolean) : [];
-  if (!models.length || !selected.length) return res.status(400).json({ error: '至少选择一个模型和一个测试项目' });
-  if (selected.some((id) => CODE_KINDS.has(tasks.find((t) => t.id === id)?.kind))) {
+  const rawTasks = Array.isArray(b.tasks) ? b.tasks.filter(Boolean) : [];
+  if (!models.length || !rawTasks.length) return res.status(400).json({ error: '至少选择一个模型和一个测试项目' });
+  // Per-task overrides: entries may be plain ids (legacy UI, run-level params)
+  // or {id, limit, repeats, concurrency, maxTokens}.
+  const taskConfigs = rawTasks.map((t) => {
+    const cfg = { id: typeof t === 'string' ? t : t.id };
+    const num = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+    const own = typeof t === 'object' && t ? t : b;
+    cfg.limit = num(own.limit); cfg.repeats = num(own.repeats);
+    cfg.concurrency = num(own.concurrency); cfg.maxTokens = num(own.maxTokens);
+    return cfg;
+  });
+  if (taskConfigs.some((c) => CODE_KINDS.has(tasks.find((t) => t.id === c.id)?.kind))) {
     const judge = await judgeHealth();
     if (!judge.ok) return res.status(422).json({
       error: `代码类评测需要判题沙箱（${JUDGE_URL}）不可达：${judge.error}`,
@@ -132,13 +142,13 @@ app.post('/api/runs', async (req, res) => {
   const id = Date.now().toString(36);
   const run = {
     id, name: b.name || '未命名测试', alias: b.alias || b.name || '未命名测试', note: b.note || '',
-    models, tasks: selected,
-    repeats: Math.min(20, Math.max(1, Number(b.repeats) || 1)),
-    concurrency: Math.min(16, Math.max(1, Number(b.concurrency) || 1)),
+    models,
+    tasks: taskConfigs.map((c) => c.id),
+    taskConfigs,
     status: 'running', startedAt: new Date().toISOString(),
     rows: [], log: [], errors: [],
-    progress: { modelIndex: 0, taskIndex: 0, repeat: 0, total: models.length * selected.length },
-    config: { limit: b.limit, maxTokens: b.maxTokens, category: b.category, difficulty: b.difficulty, contextTarget: b.contextTarget, seed: b.seed },
+    progress: { modelIndex: 0, taskIndex: 0, repeat: 0, total: models.length * taskConfigs.length },
+    config: { category: b.category, difficulty: b.difficulty, contextTarget: b.contextTarget, seed: b.seed },
   };
   runs.set(id, run);
   res.status(202).json({ id });
@@ -153,33 +163,40 @@ app.post('/api/runs', async (req, res) => {
 async function execute(run, b) {
   for (let mi = 0; mi < run.models.length && !run.cancelRequested; mi++) {
     const model = run.models[mi]; run.progress.modelIndex = mi;
-    for (let ti = 0; ti < run.tasks.length && !run.cancelRequested; ti++) {
-      const taskId = run.tasks[ti], task = tasks.find((t) => t.id === taskId);
+    for (let ti = 0; ti < run.taskConfigs.length && !run.cancelRequested; ti++) {
+      const cfgT = run.taskConfigs[ti];
+      const task = tasks.find((t) => t.id === cfgT.id);
       run.progress.taskIndex = ti;
-      if (!task) { run.errors.push(`未知测试项目：${taskId}`); continue; }
-      run.current = `${model} · ${task.name} · 并发 ${run.concurrency}`;
-      const vals = [], entryLog = [], jobs = Array.from({ length: run.repeats }, (_, i) => i);
+      if (!task) { run.errors.push(`未知测试项目：${cfgT.id}`); continue; }
+      const repeats = Math.min(20, Math.max(1, Number(cfgT.repeats) || 1));
+      const concurrency = Math.min(16, Math.max(1, Number(cfgT.concurrency) || 1));
+      run.current = `${model} · ${task.name} · 并发 ${concurrency}`;
+      const vals = [], entryLog = [], jobs = Array.from({ length: repeats }, (_, i) => i);
       let cursor = 0;
       async function worker() {
         while (cursor < jobs.length && !run.cancelRequested) {
           const i = jobs[cursor++];
           run.progress.repeat = i + 1;
-          const startLine = `${model} / ${task.name} / 第 ${i + 1} 次：请求中…`;
-          entryLog[i] = startLine; run.log.push(startLine);
+          const log = [`${model} / ${task.name} / 第 ${i + 1} 次：请求中…`];
+          entryLog[i] = log;
+          run.log.push(log[0]);
+          run.currentEntryLog = log;
           try {
-            const v = await measure(run, b, model, task);
+            const v = await measure(run, b, model, task, cfgT);
             if (run.cancelRequested) break;
             vals[i] = v;
             const line = `${model} / ${task.name} / 第 ${i + 1} 次：${JSON.stringify(v)}`;
-            entryLog[i] = line; run.log.push(line);
+            log.push(line); run.log.push(line);
           } catch (e) {
             if (run.cancelRequested) break;
             const msg = `${model} / ${task.name} / 第 ${i + 1} 次失败：${e.message}`;
-            run.errors.push(msg); entryLog[i] = msg; run.log.push(msg);
+            run.errors.push(msg); log.push(msg); run.log.push(msg);
+          } finally {
+            if (run.currentEntryLog === log) run.currentEntryLog = null;
           }
         }
       }
-      await Promise.all(Array.from({ length: Math.min(run.concurrency, jobs.length) }, worker));
+      await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
       const good = vals.filter(Boolean);
       const avg = {};
       if (good.length) {
@@ -187,19 +204,26 @@ async function execute(run, b) {
           if (typeof good[0][k] === 'number') avg[k] = good.reduce((s, x) => s + (x[k] || 0), 0) / good.length;
           else avg[k] = good[good.length - 1][k];
         }
-      } else { avg.score = 0; avg.correct = 0; avg.total = run.repeats; }
-      run.rows.push({ model, task: task.name, ability: task.ability, repeat: good.length, average: avg, details: good, log: entryLog.filter(Boolean) });
+      } else { avg.score = 0; avg.correct = 0; avg.total = repeats; }
+      run.rows.push({ model, task: task.name, ability: task.ability, repeat: good.length, average: avg, details: good, log: entryLog.filter(Boolean).flat() });
       saveRuns();
     }
   }
+  run.currentEntryLog = null;
   run.current = run.cancelRequested ? '已中断（已保留部分结果）' : '已完成';
   run.status = run.cancelRequested ? 'partial' : (run.errors.length ? 'error' : 'done');
   run.finishedAt = new Date().toISOString();
   saveRuns();
 }
 
+// Log to the run stream and to the in-flight row so 逐题日志 stays complete.
+function logLine(run, line) {
+  run.log.push(line);
+  if (run.currentEntryLog) run.currentEntryLog.push(line);
+}
+
 // The scorer is deliberately strict: reasoning without final-answer evidence is unknown, never incorrect.
-async function measure(run, b, model, task) {
+async function measure(run, b, model, task, cfgT = {}) {
   if (task.kind === 'smoke') {
     const t = Date.now();
     const r = await chat(b, model, '请只回复：测试通过。', { max_tokens: 64, runId: run.id });
@@ -207,19 +231,19 @@ async function measure(run, b, model, task) {
     return { ok: 1, firstMs: ms, tokens: r.tokens || 0, tokPerSec: r.tokPerSec || 0, output: r.text.slice(0, 80) };
   }
 
-  const { rows: sample, total } = readJsonl(task.file, taskLimit(b, task));
+  const { rows: sample, total } = readJsonl(task.file, taskLimit(cfgT, task));
   let correct = 0, incorrect = 0, unknown = 0;
-  const outputLimit = Math.min(8192, Math.max(256, Number(b.maxTokens) || 4096));
+  const outputLimit = Math.min(8192, Math.max(256, Number(cfgT.maxTokens) || 4096));
 
   for (let qi = 0; qi < sample.length && !run.cancelRequested; qi++) {
     const q = sample[qi];
-    run.log.push(`${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：请求中…`);
+    logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：请求中…`);
     try {
       if (task.kind === 'longbench2') {
         const r = await chat(b, model, buildLongBenchPrompt(q), { max_tokens: outputLimit, runId: run.id });
         const verdict = scoreChoice(q.answer, (r.text || '').trim());
         tally(verdict.status);
-        run.log.push(`${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
+        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
       } else if (task.kind === 'gpqa' || task.kind === 'mmlu') {
         const prompt = task.kind === 'gpqa'
           ? `请解答下面选择题。最后一行必须严格写成“最终答案：X”或“\\boxed{X}”，X只能是 A、B、C 或 D。\n${q.problem}`
@@ -227,13 +251,13 @@ async function measure(run, b, model, task) {
         const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id });
         const verdict = scoreChoice(String(q.answer || '').toUpperCase(), (r.text || '').trim());
         tally(verdict.status);
-        run.log.push(`${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
+        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
       } else if (task.kind === 'aime') {
         const prompt = `请解答下面AIME数学题。最后一行必须严格写成“最终答案：N”或“\\boxed{N}”，N是0到999的整数。\n${q.problem}`;
         const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id });
         const verdict = scoreAime(String(q.answer), (r.text || r.reasoningText || '').trim());
         tally(verdict.status);
-        run.log.push(`${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
+        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
       } else if (task.kind === 'humanevalplus' || task.kind === 'mbppplus') {
         const entry = task.kind === 'humanevalplus' ? q.entry_point : (q.code.match(/def\s+([A-Za-z_]\w*)\s*\(/) || [])[1];
         const prompt = task.kind === 'humanevalplus' ? buildHumanEvalPrompt(q) : buildMbppPrompt(q, entry || 'solution');
@@ -243,7 +267,7 @@ async function measure(run, b, model, task) {
           mode: 'tests', code, entry_point: entry, test_code: q.test, timeout: 15,
         }));
         tally(verdict.passed ? 'correct' : 'incorrect');
-        run.log.push(`${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdict.passed ? '通过' : '未通过'}${verdict.detail ? `（${verdict.detail}）` : ''}`);
+        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdict.passed ? '通过' : '未通过'}${verdict.detail ? `（${verdict.detail}）` : ''}`);
       } else if (task.kind === 'livecodebench') {
         const r = await chat(b, model, buildLiveCodeBenchPrompt(q), { max_tokens: outputLimit, runId: run.id });
         const code = extractCode(r.text);
@@ -258,7 +282,7 @@ async function measure(run, b, model, task) {
           }));
         }
         tally(verdict.passed ? 'correct' : 'incorrect');
-        run.log.push(`${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdict.passed ? '通过' : '未通过'}${verdict.detail ? `（${verdict.detail}）` : ''}`);
+        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdict.passed ? '通过' : '未通过'}${verdict.detail ? `（${verdict.detail}）` : ''}`);
       } else if (task.kind === 'ds1000') {
         const r = await chat(b, model, buildDs1000Prompt(q), { max_tokens: outputLimit, runId: run.id });
         const solution = extractCode(r.text, { solutionMarkers: true });
@@ -266,14 +290,14 @@ async function measure(run, b, model, task) {
           mode: 'script', code: buildDs1000Script(q.code_context, solution), timeout: 30,
         }));
         tally(verdict.passed ? 'correct' : 'incorrect');
-        run.log.push(`${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdict.passed ? '通过' : '未通过'}${verdict.detail ? `（${verdict.detail}）` : ''}`);
+        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdict.passed ? '通过' : '未通过'}${verdict.detail ? `（${verdict.detail}）` : ''}`);
       } else {
         throw new Error(`未实现的测试类型：${task.kind}`);
       }
     } catch (e) {
       // question-level failure (network, judge down, context overflow) is data, not a crashed run
       unknown++;
-      run.log.push(`${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：未知（${e.message}）`);
+      logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：未知（${e.message}）`);
     }
   }
   const answered = correct + incorrect;
@@ -284,9 +308,8 @@ async function measure(run, b, model, task) {
   }
 }
 
-function taskLimit(b, task) {
-  const requested = Number(b.limit);
-  if (Number.isFinite(requested) && requested > 0) return requested;
+function taskLimit(cfgT, task) {
+  if (Number(cfgT.limit) > 0) return Number(cfgT.limit);
   return task.defaultLimit || 0;
 }
 

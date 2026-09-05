@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 const views = [
   { id: 'overview', label: '总览' },
@@ -24,9 +24,11 @@ function select(id: ViewId) {
 const preflight = ref<any>(null);
 const tasks = ref<any[]>([]);
 const models = ref<string[]>([]);
-const runs = ref<any[]>([]); // all runs, newest first (queue view)
-const results = ref<any[]>([]); // finished runs
+const runs = ref<any[]>([]); // all runs, newest first
 const notice = ref<{ kind: 'ok' | 'err'; text: string } | null>(null);
+
+const runningRuns = computed(() => runs.value.filter((r) => r.status === 'running'));
+const finishedRuns = computed(() => runs.value.filter((r) => r.status !== 'running'));
 
 function flash(kind: 'ok' | 'err', text: string) {
   notice.value = { kind, text };
@@ -49,10 +51,7 @@ async function refreshTasks() {
   try { tasks.value = await api('/api/tasks'); } catch { tasks.value = []; }
 }
 async function refreshRuns() {
-  try {
-    runs.value = await api('/api/runs');
-    results.value = runs.value.filter((r) => r.status !== 'running');
-  } catch { /* keep last */ }
+  try { runs.value = await api('/api/runs'); } catch { /* keep last */ }
 }
 async function fetchModels() {
   loadingModels.value = true;
@@ -65,7 +64,6 @@ async function fetchModels() {
     models.value = (body.data || []).map((m: any) => m.id);
     flash('ok', `已获取 ${models.value.length} 个模型`);
   } catch (e: any) {
-    models.value = [];
     flash('err', '获取模型失败：' + e.message);
   } finally {
     loadingModels.value = false;
@@ -75,38 +73,68 @@ async function fetchModels() {
 let timer: number | undefined;
 onMounted(async () => {
   await Promise.all([refreshPreflight(), refreshTasks(), refreshRuns()]);
+  // restore the server-cached model list so 新建评测 works without re-fetching
+  try {
+    const p = await api('/api/profiles');
+    if (Array.isArray(p.models) && p.models.length) models.value = p.models;
+  } catch { /* ignore */ }
   timer = window.setInterval(refreshRuns, 2000);
 });
-onBeforeUnmount(() => window.clearInterval(timer));
-
-// ---------- 新建评测 ----------
-const loadingModels = ref(false);
-const form = ref({
-  name: '本地模型评测',
-  note: '',
-  models: [] as string[],
-  tasks: [] as string[],
-  repeats: 1,
-  concurrency: 1,
-  limit: 0,
-  maxTokens: 4096,
+onBeforeUnmount(() => {
+  window.clearInterval(timer);
+  document.removeEventListener('click', closeMenus);
 });
-const judgeKinds = ['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000'];
 
-function toggle(list: string[], v: string) {
-  const i = list.indexOf(v);
-  if (i >= 0) list.splice(i, 1); else list.push(v);
+// auto-scroll open queue logs to the bottom as they grow
+watch(() => runs.value.map((r) => (r.log || []).length).join(','), () => {
+  nextTick(() => {
+    document.querySelectorAll<HTMLElement>('.auto-scroll').forEach((el) => { el.scrollTop = el.scrollHeight; });
+  });
+});
+
+function statusText(s: string) {
+  return ({ running: '运行中', done: '已完成', error: '有错误', partial: '已中断', crashed: '崩溃' } as Record<string, string>)[s] || s;
+}
+
+// ---------- 新建评测：模型（逐栏下拉，加号追加） ----------
+const loadingModels = ref(false);
+const modelRows = ref<string[]>(['']);
+const canAddModel = computed(() => modelRows.value.length > 0 && modelRows.value[modelRows.value.length - 1] !== '');
+const selectedModels = computed(() => modelRows.value.filter(Boolean));
+
+// ---------- 新建评测：测试项目表格（逐行下拉 + 每行参数） ----------
+const taskRows = ref([{ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' }]);
+const canAddTask = computed(() => taskRows.value.length > 0 && taskRows.value[taskRows.value.length - 1].task !== '');
+const openDd = ref(-1);
+const judgeKinds = ['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000'];
+const taskById = (id: string) => tasks.value.find((t) => t.id === id);
+
+function closeMenus(e: Event) {
+  if (!(e.target as HTMLElement).closest('.dd')) openDd.value = -1;
+}
+function pickTask(i: number, id: string) {
+  taskRows.value[i].task = id;
+  openDd.value = -1;
 }
 
 async function submitRun() {
-  if (!form.value.models.length || !form.value.tasks.length) {
-    flash('err', '请至少选择一个模型和一个测试项目');
-    return;
-  }
+  if (!selectedModels.value.length) { flash('err', '请至少选择一个模型'); return; }
+  const taskPayload = taskRows.value
+    .filter((r) => r.task)
+    .map((r) => {
+      const t: any = { id: r.task };
+      for (const k of ['limit', 'repeats', 'concurrency', 'maxTokens'] as const) {
+        if (r[k] !== '' && Number(r[k]) > 0) t[k] = Number(r[k]);
+      }
+      return t;
+    });
+  if (!taskPayload.length) { flash('err', '请至少选择一个测试项目'); return; }
   try {
-    const body: any = { ...form.value };
-    if (body.limit <= 0) delete body.limit; // 0 = 使用每个测试的默认题数
-    await api('/api/runs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    await api('/api/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: form.name, note: form.note, models: selectedModels.value, tasks: taskPayload }),
+    });
     flash('ok', '评测已加入运行队列');
     select('queue');
     refreshRuns();
@@ -114,6 +142,8 @@ async function submitRun() {
     flash('err', e.message);
   }
 }
+
+const form = ref({ name: '本地模型评测', note: '' });
 
 async function cancelRun(id: string) {
   try {
@@ -123,11 +153,7 @@ async function cancelRun(id: string) {
   } catch (e: any) { flash('err', e.message); }
 }
 
-function statusText(s: string) {
-  return ({ running: '运行中', done: '已完成', error: '有错误', partial: '已中断', crashed: '崩溃' } as Record<string, string>)[s] || s;
-}
-
-// ---------- 历史记录 ----------
+// ---------- 结果 ----------
 function scoreOf(row: any) {
   const a = row.average || {};
   if (typeof a.score === 'number') return (a.score * 100).toFixed(1) + '%';
@@ -144,20 +170,30 @@ function scoreDetail(row: any) {
   return parts.join(' / ');
 }
 
-// ---------- 对比分析 ----------
+// ---------- 对比分析：列 = 测试×模型，行 = 选入的运行 ----------
 const comparePicks = ref<string[]>([]);
-const compareTable = computed(() => {
-  const picked = results.value.filter((r) => comparePicks.value.includes(r.id));
-  const rows = new Map<string, any>();
-  for (const run of picked) {
+const compareCols = computed(() => {
+  const taskOrder = new Map(tasks.value.map((t, i) => [t.name, i]));
+  const seen = new Map<string, { task: string; model: string; taskIdx: number; order: number }>();
+  let order = 0;
+  for (const run of finishedRuns.value) {
+    if (!comparePicks.value.includes(run.id)) continue;
     for (const row of run.rows || []) {
-      const key = row.task;
-      if (!rows.has(key)) rows.set(key, { task: key, ability: row.ability, cells: [] });
-      rows.get(key).cells.push({ run: run.name || run.id, model: row.model, score: row.average?.score, detail: scoreDetail(row) });
+      const key = `${row.task}\u0000${row.model}`;
+      if (!seen.has(key)) seen.set(key, { task: row.task, model: row.model, taskIdx: taskOrder.get(row.task) ?? 99, order: order++ });
     }
   }
-  return [...rows.values()];
+  return [...seen.values()].sort((a, b) => a.taskIdx - b.taskIdx || a.order - b.order);
 });
+function compareCell(run: any, col: { task: string; model: string }) {
+  const row = (run.rows || []).find((r: any) => r.task === col.task && r.model === col.model);
+  if (!row) return null;
+  return { score: row.average?.score, detail: scoreDetail(row) };
+}
+function cellScore(run: any, col: { task: string; model: string }): string {
+  const cell = compareCell(run, col);
+  return cell && cell.score != null ? (cell.score * 100).toFixed(1) + '%' : '—';
+}
 
 // ---------- 环境设置 ----------
 const profile = ref({ id: 'default', endpoint: cfg.value.endpoint, key: '', rememberKey: false });
@@ -216,8 +252,8 @@ async function saveProfile() {
             <div class="card">
               <h3>推理服务</h3>
               <p class="mono">{{ cfg.endpoint }}</p>
-              <p>{{ models.length ? `${models.length} 个模型可测` : '尚未获取模型列表' }}</p>
-              <button class="btn" @click="fetchModels(); select('new')">开始评测</button>
+              <p>{{ models.length ? `${models.length} 个模型可测` : '尚未获取模型列表（环境设置）' }}</p>
+              <button class="btn" @click="select('new')">开始评测</button>
             </div>
             <div class="card">
               <h3>判题沙箱</h3>
@@ -228,9 +264,9 @@ async function saveProfile() {
               <p class="soft">HumanEval+ / MBPP+ / LiveCodeBench / DS-1000 需要判题沙箱</p>
             </div>
             <div class="card">
-              <h3>最近运行</h3>
-              <p class="big-num">{{ runs.length }}</p>
-              <p>{{ runs.filter(r => r.status === 'running').length }} 个运行中</p>
+              <h3>正在运行</h3>
+              <p class="big-num">{{ runningRuns.length }}</p>
+              <p>历史记录 {{ finishedRuns.length }} 次</p>
             </div>
             <div class="card">
               <h3>测试协议</h3>
@@ -242,75 +278,93 @@ async function saveProfile() {
 
         <!-- 新建评测 -->
         <template v-else-if="active === 'new'">
-          <div class="panel">
+          <div class="panel head-row">
             <div class="row">
               <label>结果名称</label>
-              <input v-model="form.name" type="text" placeholder="例如：Qwen3.8 Q8 vs Q6K" />
+              <input v-model="form.name" type="text" class="input" placeholder="例如：Qwen3.8 Q8 vs Q6K" />
             </div>
-            <div class="row">
+            <div class="row grow">
               <label>备注</label>
-              <input v-model="form.note" type="text" placeholder="可选" />
+              <input v-model="form.note" type="text" class="input" placeholder="可选" />
             </div>
-            <div class="row">
-              <label>推理端点</label>
-              <div class="grow">
-                <input v-model="cfg.endpoint" type="text" />
-                <button class="btn ghost" :disabled="loadingModels" @click="fetchModels">{{ loadingModels ? '获取中…' : '获取模型' }}</button>
+          </div>
+
+          <fieldset class="panel">
+            <legend>模型（自上而下即执行顺序）</legend>
+            <div class="rows-list">
+              <div v-for="(m, i) in modelRows" :key="`m${i}`" class="row-line">
+                <span class="idx">{{ i + 1 }}</span>
+                <select v-model="modelRows[i]" class="input wide" :aria-label="`模型 ${i + 1}`">
+                  <option value="" disabled>选择模型…</option>
+                  <option v-for="opt in models" :key="opt" :value="opt">{{ opt }}</option>
+                </select>
+                <button v-if="modelRows.length > 1" class="x" type="button" :aria-label="`移除模型 ${i + 1}`" @click="modelRows.splice(i, 1)">×</button>
               </div>
-            </div>
-          </div>
-
-          <fieldset class="panel">
-            <legend>模型（多选，按选择顺序执行）</legend>
-            <p v-if="!models.length" class="soft">先点击"获取模型"。</p>
-            <div class="chips">
-              <button
-                v-for="m in models" :key="m" type="button" class="chip"
-                :class="{ on: form.models.includes(m) }"
-                @click="toggle(form.models, m)"
-              >{{ m }}</button>
+              <button v-if="canAddModel" class="btn ghost add" type="button" @click="modelRows.push('')">＋ 添加模型</button>
+              <p v-if="!models.length" class="soft">模型列表为空 — 请先到"环境设置"填写端点并获取模型。</p>
             </div>
           </fieldset>
 
           <fieldset class="panel">
-            <legend>测试项目</legend>
-            <div class="task-grid">
-              <label v-for="t in tasks" :key="t.id" class="task-card" :class="{ on: form.tasks.includes(t.id) }">
-                <input type="checkbox" :checked="form.tasks.includes(t.id)" @change="toggle(form.tasks, t.id)" />
-                <div>
-                  <strong>{{ t.name }}</strong>
-                  <small>{{ t.ability }}</small>
-                  <small v-if="t.defaultLimit" class="soft">默认题数 {{ t.defaultLimit }}</small>
-                  <small v-if="judgeKinds.includes(t.kind)" class="warn">需要判题沙箱</small>
-                </div>
-              </label>
-            </div>
+            <legend>测试项目（每行一项，参数可留空用默认值）</legend>
+            <table class="task-table">
+              <thead>
+                <tr>
+                  <th class="c-task">测试项目</th>
+                  <th>题数</th>
+                  <th>重复次数</th>
+                  <th>并发请求</th>
+                  <th>max_tokens</th>
+                  <th class="c-note">备注</th>
+                  <th class="c-x"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r, i) in taskRows" :key="`t${i}`">
+                  <td class="c-task">
+                    <div class="dd">
+                      <button class="dd-toggle input" type="button" @click.stop="openDd = openDd === i ? -1 : i">
+                        {{ taskById(r.task)?.name || '选择测试项目…' }}
+                      </button>
+                      <ul v-if="openDd === i" class="dd-menu">
+                        <li v-for="t in tasks" :key="t.id" @click.stop="pickTask(i, t.id)">
+                          <strong>{{ t.name }}</strong>
+                          <small>{{ t.ability }}{{ judgeKinds.includes(t.kind) ? ' · 需要沙箱' : '' }}</small>
+                        </li>
+                      </ul>
+                    </div>
+                  </td>
+                  <td><input v-model="r.limit" class="input num" type="number" min="1" :placeholder="taskById(r.task)?.defaultLimit || '全部'" /></td>
+                  <td><input v-model="r.repeats" class="input num" type="number" min="1" placeholder="1" /></td>
+                  <td><input v-model="r.concurrency" class="input num" type="number" min="1" placeholder="1" /></td>
+                  <td><input v-model="r.maxTokens" class="input num" type="number" min="256" placeholder="4096" /></td>
+                  <td class="c-note soft">
+                    <template v-if="taskById(r.task)">{{ taskById(r.task).ability }} · {{ judgeKinds.includes(taskById(r.task).kind) ? '需要判题沙箱' : '无需沙箱' }}</template>
+                  </td>
+                  <td class="c-x"><button v-if="taskRows.length > 1" class="x" type="button" :aria-label="`移除测试 ${i + 1}`" @click="taskRows.splice(i, 1)">×</button></td>
+                </tr>
+              </tbody>
+            </table>
+            <button v-if="canAddTask" class="btn ghost add" type="button" @click="taskRows.push({ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' })">＋ 添加测试项目</button>
           </fieldset>
-
-          <div class="panel params">
-            <div class="row"><label>重复次数</label><input v-model.number="form.repeats" type="number" min="1" max="20" /></div>
-            <div class="row"><label>并发请求</label><input v-model.number="form.concurrency" type="number" min="1" max="16" /></div>
-            <div class="row"><label>题数上限</label><input v-model.number="form.limit" type="number" min="0" placeholder="0 = 用默认题数" /></div>
-            <div class="row"><label>max_tokens</label><input v-model.number="form.maxTokens" type="number" min="256" max="8192" /></div>
-          </div>
 
           <div class="actions">
             <button class="btn primary" @click="submitRun">开始评测</button>
-            <span class="soft">temperature=0 · 抑制思维链 · 代码题由沙箱判分</span>
+            <span class="soft">temperature=0 · 抑制思维链 · 留空的参数使用每项默认值</span>
           </div>
         </template>
 
-        <!-- 运行队列 -->
+        <!-- 运行队列：只显示正在运行的，日志常开、自动滚底 -->
         <template v-else-if="active === 'queue'">
-          <p v-if="!runs.length" class="soft">暂无运行。</p>
-          <article v-for="r in runs" :key="r.id" class="run-card">
+          <p v-if="!runningRuns.length" class="soft">当前没有正在运行的评测。</p>
+          <article v-for="r in runningRuns" :key="r.id" class="run-card">
             <header>
               <strong>{{ r.name }}</strong>
-              <span class="badge" :class="r.status">{{ statusText(r.status) }}</span>
-              <button v-if="r.status === 'running'" class="btn ghost danger" @click="cancelRun(r.id)">中断</button>
+              <span class="badge running">{{ statusText(r.status) }}</span>
+              <button class="btn ghost danger" @click="cancelRun(r.id)">中断</button>
             </header>
             <p class="soft">
-              {{ r.models.join('、') }} · {{ r.tasks.length }} 项测试 · 进度 {{ (r.progress?.modelIndex || 0) + 1 }}/{{ r.models.length }}
+              {{ (r.models || []).join('、') }} · {{ (r.tasks || []).length }} 项测试 · 进度 {{ (r.progress?.modelIndex || 0) + 1 }}/{{ r.models.length }}
               <template v-if="r.current"> — {{ r.current }}</template>
             </p>
             <div v-if="r.rows?.length" class="mini-table">
@@ -319,22 +373,19 @@ async function saveProfile() {
                 <small class="soft">{{ scoreDetail(row) }}</small>
               </div>
             </div>
-            <details>
-              <summary>运行日志（{{ r.log.length }}）</summary>
-              <pre class="log">{{ r.log.slice(-40).join('\n') }}</pre>
-            </details>
+            <pre class="log auto-scroll">{{ (r.log || []).join('\n') }}</pre>
           </article>
         </template>
 
         <!-- 历史记录 -->
         <template v-else-if="active === 'history'">
-          <p v-if="!results.length" class="soft">暂无完成的结果。</p>
-          <article v-for="r in results" :key="r.id" class="run-card">
+          <p v-if="!finishedRuns.length" class="soft">暂无完成的结果。</p>
+          <article v-for="r in finishedRuns" :key="r.id" class="run-card">
             <header>
               <strong>{{ r.name }}</strong>
               <span class="badge" :class="r.status">{{ statusText(r.status) }}</span>
               <span class="soft">{{ new Date(r.startedAt).toLocaleString() }}</span>
-              <button class="btn ghost" :class="{ on: comparePicks.includes(r.id) }" @click="toggle(comparePicks, r.id)">
+              <button class="btn ghost" :class="{ on: comparePicks.includes(r.id) }" @click="comparePicks.includes(r.id) ? comparePicks.splice(comparePicks.indexOf(r.id), 1) : comparePicks.push(r.id)">
                 {{ comparePicks.includes(r.id) ? '已选入对比' : '选入对比' }}
               </button>
             </header>
@@ -351,25 +402,34 @@ async function saveProfile() {
               </tbody>
             </table>
             <details>
-              <summary>逐题日志</summary>
-              <pre class="log">{{ (r.rows[0]?.log || []).join('\n') }}</pre>
+              <summary>逐题日志（{{ (r.log || []).length }} 行）</summary>
+              <pre class="log">{{ (r.log || []).join('\n') }}</pre>
             </details>
           </article>
         </template>
 
-        <!-- 对比分析 -->
+        <!-- 对比分析：行=选入的运行，列=测试×模型 -->
         <template v-else-if="active === 'compare'">
-          <p v-if="!comparePicks.length" class="soft">在"历史记录"中把若干次运行"选入对比"，这里会按测试项目并排列出得分。</p>
-          <table v-else class="table">
+          <p v-if="!comparePicks.length" class="soft">在"历史记录"中把若干次运行"选入对比"，这里会按 测试×模型 并排列出得分。</p>
+          <table v-else class="table compare">
             <thead>
-              <tr><th>测试项目</th><th v-for="id in comparePicks" :key="id">{{ results.find(r => r.id === id)?.name || id }}</th></tr>
+              <tr>
+                <th class="c-run">项目</th>
+                <th v-for="col in compareCols" :key="col.task + col.model">
+                  <span class="col-task">{{ col.task }}</span>
+                  <span class="col-model soft">{{ col.model }}</span>
+                </th>
+              </tr>
             </thead>
             <tbody>
-              <tr v-for="row in compareTable" :key="row.task">
-                <td>{{ row.task }}<br /><small class="soft">{{ row.ability }}</small></td>
-                <td v-for="(c, i) in row.cells" :key="i">
-                  <strong>{{ c.score != null ? (c.score * 100).toFixed(1) + '%' : '—' }}</strong>
-                  <br /><small class="soft">{{ c.detail }}</small>
+              <tr v-for="(run, ri) in finishedRuns.filter(r => comparePicks.includes(r.id))" :key="run.id">
+                <td class="c-run"><strong>项目{{ ri + 1 }}</strong><br /><small class="soft">{{ run.name }}</small></td>
+                <td v-for="col in compareCols" :key="col.task + col.model">
+                  <template v-if="compareCell(run, col)">
+                    <strong>{{ cellScore(run, col) }}</strong>
+                    <br /><small class="soft">{{ compareCell(run, col)!.detail }}</small>
+                  </template>
+                  <template v-else>—</template>
                 </td>
               </tr>
             </tbody>
@@ -410,12 +470,12 @@ async function saveProfile() {
         <!-- 环境设置 -->
         <template v-else-if="active === 'settings'">
           <div class="panel">
-            <div class="row"><label>API 端点</label><input v-model="profile.endpoint" type="text" /></div>
-            <div class="row"><label>API Key</label><input v-model="profile.key" type="password" placeholder="本地服务通常留空" /></div>
+            <div class="row"><label>API 端点</label><input v-model="profile.endpoint" class="input" type="text" /></div>
+            <div class="row"><label>API Key</label><input v-model="profile.key" class="input" type="password" placeholder="本地服务通常留空" /></div>
             <div class="row"><label></label><label class="inline"><input v-model="profile.rememberKey" type="checkbox" /> 保存 Key（服务端配置）</label></div>
             <div class="actions">
               <button class="btn primary" @click="saveProfile">保存并应用</button>
-              <button class="btn" @click="fetchModels">重新获取模型</button>
+              <button class="btn" :disabled="loadingModels" @click="fetchModels">{{ loadingModels ? '获取中…' : '重新获取模型' }}</button>
             </div>
           </div>
           <div class="panel">
@@ -480,24 +540,68 @@ async function saveProfile() {
   border-radius: var(--radius-md); box-shadow: var(--shadow-card); padding: 16px 18px;
 }
 .panel { margin-bottom: 14px; }
+fieldset.panel { border: 1px solid var(--color-line); }
+fieldset.panel legend { padding: 0 8px; color: var(--color-ink-soft); font-size: 13px; }
 .card h3, .panel h3 { margin: 0 0 8px; font-size: 14px; color: var(--color-ink-soft); font-weight: 700; }
 .card p { margin: 4px 0; }
 .big-num { font-family: var(--font-display); font-size: 30px; margin: 2px 0 !important; }
 .mono { font-family: var(--font-mono); font-size: 12px; }
 .soft { color: var(--color-ink-soft); font-size: 12px; }
-.warn { color: var(--color-warn); font-size: 12px; display: block; }
+
+.head-row { display: flex; gap: 24px; flex-wrap: wrap; }
+.head-row .row { flex: 1 1 280px; }
 
 .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .row > label { width: 90px; flex: none; color: var(--color-ink-soft); font-size: 13px; }
-.grow { display: flex; gap: 8px; flex: 1; }
-.grow input { flex: 1; }
 
-input[type='text'], input[type='password'], input[type='number'] {
+.input {
   background: var(--color-paper); color: var(--color-ink);
   border: 1px solid var(--color-line); border-radius: var(--radius-sm);
   padding: 7px 10px; font: inherit; min-width: 0;
 }
-input:focus { outline: 2px solid var(--color-teal-line); outline-offset: 1px; }
+.input:focus { outline: 2px solid var(--color-teal-line); outline-offset: 1px; }
+.input.wide { width: 100%; }
+.input.num { width: 100%; text-align: right; }
+.input.num::placeholder, .input::placeholder { color: var(--color-ink-soft); opacity: 0.55; }
+select.input { appearance: auto; }
+
+.rows-list { display: flex; flex-direction: column; gap: 8px; }
+.row-line { display: flex; align-items: center; gap: 10px; }
+.row-line .idx { width: 22px; text-align: right; color: var(--color-ink-soft); font-family: var(--font-mono); font-size: 12px; flex: none; }
+.row-line select { flex: 1; }
+.x {
+  width: 26px; height: 26px; flex: none; border: 1px solid var(--color-line); border-radius: 50%;
+  background: transparent; color: var(--color-ink-soft); cursor: pointer; font-size: 14px; line-height: 1;
+}
+.x:hover { color: var(--color-danger); border-color: var(--color-danger); }
+.add { align-self: flex-start; }
+
+/* 测试项目表格 */
+.task-table { width: 100%; border-collapse: collapse; }
+.task-table th, .task-table td {
+  border: 1px solid var(--color-line); padding: 6px 8px; text-align: left; vertical-align: middle;
+  font-size: 13px;
+}
+.task-table th { background: var(--color-teal-soft); color: var(--color-ink-soft); font-weight: 600; white-space: nowrap; }
+.task-table .c-task { width: 30%; min-width: 220px; }
+.task-table .c-note { width: 26%; }
+.task-table .c-x { width: 36px; text-align: center; border: 0 !important; background: transparent; }
+.task-table td .input { border-color: transparent; background: transparent; }
+.task-table td .input:focus { background: var(--color-paper); border-color: var(--color-teal-line); }
+.task-table .dd-toggle { width: 100%; text-align: left; cursor: pointer; }
+
+/* 自定义下拉 */
+.dd { position: relative; }
+.dd-menu {
+  position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; right: -140px; min-width: 100%;
+  margin: 0; padding: 4px; list-style: none;
+  background: var(--color-paper-raised); border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-card); max-height: 320px; overflow: auto;
+}
+.dd-menu li { padding: 7px 10px; cursor: pointer; border-radius: var(--radius-sm); }
+.dd-menu li:hover { background: var(--color-teal-soft); }
+.dd-menu li strong { display: block; font-size: 13px; }
+.dd-menu li small { color: var(--color-ink-soft); }
 
 .btn {
   border: 1px solid var(--color-line); background: var(--color-paper-raised); color: var(--color-ink);
@@ -511,26 +615,6 @@ input:focus { outline: 2px solid var(--color-teal-line); outline-offset: 1px; }
 .btn.ghost.danger { color: var(--color-danger); border-color: var(--color-danger); }
 .btn.on { outline: 2px solid var(--color-teal-line); }
 .btn:disabled { opacity: 0.6; cursor: default; }
-
-.chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.chip {
-  border: 1px solid var(--color-line); background: var(--color-paper); color: var(--color-ink);
-  border-radius: 999px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 13px;
-}
-.chip.on { background: var(--color-teal); color: var(--color-teal-on); border-color: var(--color-teal); }
-
-.task-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
-.task-card {
-  display: flex; gap: 10px; padding: 10px 12px; border: 1px solid var(--color-line);
-  border-radius: var(--radius-sm); cursor: pointer; background: var(--color-paper);
-}
-.task-card.on { border-color: var(--color-teal); outline: 1px solid var(--color-teal); background: var(--color-teal-soft); }
-.task-card strong { display: block; font-size: 13px; }
-.task-card small { display: block; color: var(--color-ink-soft); }
-
-.params { display: flex; flex-wrap: wrap; gap: 0 24px; }
-.params .row { flex: 1 1 200px; }
-.inline { display: flex; align-items: center; gap: 6px; color: var(--color-ink-soft); font-size: 13px; }
 .actions { display: flex; align-items: center; gap: 14px; margin: 6px 0 24px; }
 
 .run-card { margin-bottom: 16px; }
@@ -547,14 +631,19 @@ header .btn { margin-left: auto; }
 .table { width: 100%; border-collapse: collapse; margin: 8px 0; }
 .table th, .table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--color-line); font-size: 13px; vertical-align: top; }
 .table th { color: var(--color-ink-soft); font-weight: 600; }
+.table.compare th { border-bottom: 2px solid var(--color-line); }
+.col-task { display: block; font-weight: 700; color: var(--color-ink); }
+.col-model { display: block; font-family: var(--font-mono); font-size: 11px; }
+.c-run { white-space: nowrap; }
 
 details { margin-top: 6px; }
 summary { cursor: pointer; color: var(--color-ink-soft); font-size: 13px; }
 .log {
-  max-height: 320px; overflow: auto; background: var(--color-paper);
+  margin-top: 8px; max-height: 320px; overflow: auto; background: var(--color-paper);
   border: 1px solid var(--color-line); border-radius: var(--radius-sm);
   padding: 10px; font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap;
 }
+.run-card .log { max-height: 420px; }
 
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .dot.big { width: 12px; height: 12px; }
