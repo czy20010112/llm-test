@@ -24,7 +24,7 @@ docker compose -f judge-compose.yaml up -d --build
 
 ## 测试协议（13 项）
 
-统一口径：temperature=0、抑制思维链（`enable_thinking=false`）；选择题只认明确的最终答案（`最终答案：X` / `\boxed{X}` / 末行独立字母），推理无结论计"未知"并保留在分母中。
+统一口径：temperature=0、默认抑制思维链（`enable_thinking=false`）；与官方榜单重叠的四项按官方口径开启思考（`reasoning_effort=xhigh`）：AIME 2025 输出预算 38,912、GPQA Diamond / LiveCodeBench / IFBench 为 32,768（依据 Qwen3 技术报告与 Qwen3.8-27B 模型卡）。选择题只认明确的最终答案（`最终答案：X` / `\boxed{X}` / 末行独立字母），推理无结论计"未知"并保留在分母中。
 
 | 协议 | 题池 | 判分 | 说明 |
 |---|---|---|---|

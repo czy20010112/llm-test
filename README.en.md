@@ -24,7 +24,7 @@ docker compose -f judge-compose.yaml up -d --build
 
 ## Protocols (13)
 
-Common sampling: temperature=0, single generation (pass@1). Thinking is disabled by default (`enable_thinking=false`) except LiveCodeBench, which follows the official setup with thinking on; code and instruction scoring reads only the post-thinking content. MCQ scoring accepts an explicit final answer only (最终答案：X / \boxed{X} / trailing choice letter); reasoning without a conclusion counts as "unknown" and stays in the denominator.
+Common sampling: temperature=0, single generation (pass@1). Protocols overlapping the official leaderboard run with thinking on per the official setup (`reasoning_effort=xhigh`): AIME 2025 with a 38,912-token output budget, GPQA Diamond / LiveCodeBench / IFBench with 32,768 (per the Qwen3 tech report and the Qwen3.8-27B model card); all other protocols keep thinking disabled by default (`enable_thinking=false`). Code and instruction scoring reads only the post-thinking content. MCQ scoring accepts an explicit final answer only (最终答案：X / \boxed{X} / trailing choice letter); reasoning without a conclusion counts as "unknown" and stays in the denominator.
 
 | Protocol | Pool | Scoring | Notes |
 |---|---|---|---|
