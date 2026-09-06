@@ -58,6 +58,11 @@ test('extractCode falls back to raw text', () => {
   assert.equal(extractCode('def f():\n    return 2'), 'def f():\n    return 2');
 });
 
+test('extractCode strips thinking blocks before extraction', () => {
+  assert.equal(extractCode('<think>\nlets reason\n</think>\n```python\nprint(1)\n```'), 'print(1)');
+  assert.equal(extractCode('<think>truncated reasoning without close'), '');
+});
+
 test('buildLongBenchPrompt includes context, question and choices', () => {
   const p = buildLongBenchPrompt({ context: 'MATERIAL', question: 'Q?', A: 'a', B: 'b', C: 'c', D: 'd' });
   assert.ok(p.includes('MATERIAL') && p.includes('Q?') && p.includes('D. d'));

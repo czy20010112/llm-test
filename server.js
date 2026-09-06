@@ -33,7 +33,20 @@ function normalizeRunScores(run) {
 
 try {
   const savedRuns = path.join(__dirname, 'data', 'runs.json');
-  if (fs.existsSync(savedRuns)) for (const r of JSON.parse(fs.readFileSync(savedRuns, 'utf8'))) runs.set(r.id, normalizeRunScores(r));
+  if (fs.existsSync(savedRuns)) {
+    let staleMarked = false;
+    for (const r of JSON.parse(fs.readFileSync(savedRuns, 'utf8')).map(normalizeRunScores)) {
+      // a restart kills in-flight runs; don't leave phantom "running" entries in the queue
+      if (r.status === 'running') {
+        r.status = 'partial';
+        r.current = '服务重启，运行被中断（已完成部分已保留）';
+        r.finishedAt = new Date().toISOString();
+        staleMarked = true;
+      }
+      runs.set(r.id, r);
+    }
+    if (staleMarked) saveRuns();
+  }
 } catch {}
 function saveRuns() {
   fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
@@ -52,18 +65,18 @@ function saveState() {
 // defaultLimit: sampled questions when the caller does not pass a limit
 const tasks = [
   { id: 'smoke_speed', name: '连通性与吐字速度', ability: '实际可用性 / 首 token 与生成速度', kind: 'smoke', defaultMaxTokens: 2048 },
-  { id: 'gpqa_cached', name: 'GPQA Diamond（科学推理）', ability: '高难度科学推理与知识整合', kind: 'gpqa', file: 'gpqa_diamond_mc.jsonl', defaultLimit: 198, defaultMaxTokens: 8192 },
-  { id: 'aime_cached', name: 'AIME 2025（数学推理）', ability: '数学竞赛推理与精确计算', kind: 'aime', file: 'aime_2025.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
-  { id: 'mmlu_pro_cached', name: 'MMLU-Pro（综合知识）', ability: '广泛知识、学科理解与选择题稳健性', kind: 'mmlu', file: 'MMLU-Pro.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
-  { id: 'longbench2', name: 'LongBench v2（长上下文）', ability: '超长上下文检索、长文推理与指令跟随', kind: 'longbench2', file: 'longbench2.jsonl', defaultLimit: 30, defaultMaxTokens: 2048 },
-  { id: 'humanevalplus', name: 'HumanEval+（代码生成）', ability: '函数级 Python 代码生成的正确性（增强测试集）', kind: 'humanevalplus', file: 'humanevalplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
-  { id: 'mbppplus', name: 'MBPP+（代码生成）', ability: '基础编程任务代码生成的正确性（增强测试集）', kind: 'mbppplus', file: 'mbppplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
-  { id: 'livecodebench', name: 'LiveCodeBench（竞赛编程）', ability: '竞赛级算法编程（stdin / 函数式，隐藏测试）', kind: 'livecodebench', file: 'livecodebench.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
-  { id: 'ds1000', name: 'DS-1000（数据科学编程）', ability: 'NumPy/Pandas/SciPy/Sklearn/Matplotlib 真实数据科学任务', kind: 'ds1000', file: 'ds1000.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
-  { id: 'ifeval', name: 'IFEval（指令遵循）', ability: '可验证指令约束的精确遵循（格式/字数/关键词等）', kind: 'ifeval', file: 'ifeval.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
-  { id: 'ifbench', name: 'IFBench（指令泛化）', ability: '域外可验证指令的泛化遵循（AllenAI 2025）', kind: 'ifbench', file: 'ifbench.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
-  { id: 'safetybench_cn', name: 'SafetyBench（中文安全）', ability: '安全风险场景选择题（违法/隐私/歧视/身心健康等）', kind: 'mmlu', file: 'safetybench_cn.jsonl', defaultLimit: 100, defaultMaxTokens: 2048 },
-  { id: 'xstest', name: 'XSTest（过度拒绝）', ability: '安全提示误拒校准（看起来危险、实际安全）', kind: 'xstest', file: 'xstest.jsonl', defaultLimit: 250, defaultMaxTokens: 1024 },
+  { id: 'gpqa_cached', name: 'GPQA Diamond（科学推理）', ability: '高难度科学推理与知识整合｜全量 198 题', kind: 'gpqa', file: 'gpqa_diamond_mc.jsonl', defaultLimit: 198, defaultMaxTokens: 8192 },
+  { id: 'aime_cached', name: 'AIME 2025（数学推理）', ability: '数学竞赛推理与精确计算｜全量 30 题', kind: 'aime', file: 'aime_2025.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
+  { id: 'mmlu_pro_cached', name: 'MMLU-Pro（综合知识）', ability: '广泛知识、学科理解与选择题稳健性｜全量 12032 题', kind: 'mmlu', file: 'MMLU-Pro.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'longbench2', name: 'LongBench v2（长上下文）', ability: '超长上下文检索、长文推理与指令跟随｜全量 503 题', kind: 'longbench2', file: 'longbench2.jsonl', defaultLimit: 30, defaultMaxTokens: 2048 },
+  { id: 'humanevalplus', name: 'HumanEval+（代码生成）', ability: '函数级 Python 代码生成的正确性（增强测试集）｜全量 164 题', kind: 'humanevalplus', file: 'humanevalplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
+  { id: 'mbppplus', name: 'MBPP+（代码生成）', ability: '基础编程任务代码生成的正确性（增强测试集）｜全量 378 题', kind: 'mbppplus', file: 'mbppplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
+  { id: 'livecodebench', name: 'LiveCodeBench（竞赛编程）', ability: '竞赛级算法编程（stdin / 函数式，隐藏测试）｜官方口径：开启思考｜全量 342 题', kind: 'livecodebench', file: 'livecodebench.jsonl', defaultLimit: 30, defaultMaxTokens: 16384 },
+  { id: 'ds1000', name: 'DS-1000（数据科学编程）', ability: 'NumPy/Pandas/SciPy/Sklearn/Matplotlib 真实数据科学任务｜全量 1000 题', kind: 'ds1000', file: 'ds1000.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
+  { id: 'ifeval', name: 'IFEval（指令遵循）', ability: '可验证指令约束的精确遵循（格式/字数/关键词等）｜全量 541 题', kind: 'ifeval', file: 'ifeval.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'ifbench', name: 'IFBench（指令泛化）', ability: '域外可验证指令的泛化遵循（AllenAI 2025）｜全量 300 题', kind: 'ifbench', file: 'ifbench.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'safetybench_cn', name: 'SafetyBench（中文安全）', ability: '安全风险场景选择题（违法/隐私/歧视/身心健康等）｜全量 11435 题', kind: 'mmlu', file: 'safetybench_cn.jsonl', defaultLimit: 100, defaultMaxTokens: 2048 },
+  { id: 'xstest', name: 'XSTest（过度拒绝）', ability: '安全提示误拒校准（看起来危险、实际安全）｜全量 250 题', kind: 'xstest', file: 'xstest.jsonl', defaultLimit: 250, defaultMaxTokens: 1024 },
 ];
 const CODE_KINDS = new Set(['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000', 'ifeval', 'ifbench']);
 
@@ -233,7 +246,10 @@ async function execute(run, b) {
           if (typeof good[0][k] === 'number') avg[k] = good.reduce((s, x) => s + (x[k] || 0), 0) / good.length;
           else avg[k] = good[good.length - 1][k];
         }
-      } else { avg.score = 0; avg.correct = 0; avg.total = repeats; }
+      } else {
+        // all repeats failed or were interrupted — no fabricated sample counts
+        avg.score = 0; avg.correct = 0; avg.incorrect = 0; avg.unknown = 0; avg.total = 0; avg.failedRepeats = repeats;
+      }
       run.rows.push({ model, task: task.name, ability: task.ability, repeat: good.length, average: avg, details: good, log: entryLog.filter(Boolean).flat() });
       saveRuns();
     }
@@ -324,7 +340,8 @@ async function measure(run, b, model, task, cfgT = {}) {
         tally(verdict.passed ? 'correct' : 'incorrect');
         logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else if (task.kind === 'livecodebench') {
-        const r = await chat(b, model, buildLiveCodeBenchPrompt(q), { max_tokens: outputLimit, runId: run.id });
+        // 官方口径：开启思考；判分只取思考后的正文（reasoning_content / <think> 已剥离）
+        const r = await chat(b, model, buildLiveCodeBenchPrompt(q), { max_tokens: outputLimit, runId: run.id, thinking: true });
         const code = extractCode(r.text);
         let verdict;
         if (q.mode === 'functional') {
@@ -468,7 +485,8 @@ async function chat(b, model, prompt, opts) {
       body: JSON.stringify({
         model, messages: [{ role: 'user', content: prompt }],
         temperature: 0, max_tokens: opts.max_tokens || 128, stream: false,
-        chat_template_kwargs: { enable_thinking: false },
+        // 默认抑制思维链；LiveCodeBench 等官方口径开启思考的任务传 thinking: true
+        chat_template_kwargs: { enable_thinking: opts.thinking === true },
       }),
       signal: controller.signal,
     });

@@ -35,9 +35,12 @@ function readJsonl(file, limit = 0) {
   return { rows, total: lines.filter((l) => l.trim()).length };
 }
 
-/** Strip markdown fences / <code> tags / DS-1000 markers from a model reply. */
+/** Strip markdown fences / <code> tags / DS-1000 markers from a model reply.
+ * Also drops thinking blocks — some servers inline <think>…</think> into content
+ * instead of reasoning_content, and scoring must only see the final answer. */
 function extractCode(text, { solutionMarkers = false } = {}) {
   let t = String(text || '');
+  t = t.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<think>[\s\S]*$/i, '');
   if (solutionMarkers) {
     const begin = t.search(/###\s*BEGIN\s*SOLUTION|BEGIN\s*SOLUTION/);
     if (begin >= 0) {

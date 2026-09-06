@@ -266,17 +266,18 @@ const isSpeedRow = (row: any) => Number.isFinite(row?.average?.tokPerSec);
 function scoreOf(row: any) {
   const a = row.average || {};
   if (isSpeedRow(row)) return `${a.tokPerSec.toFixed(1)} t/s`;
-  if (typeof a.score === 'number') return (a.score * 100).toFixed(1) + '%';
+  if (typeof a.score === 'number' && a.total > 0) return (a.score * 100).toFixed(1) + '%';
   return '—';
 }
 function scoreDetail(row: any) {
   const a = row.average || {};
   if (Number.isFinite(a.tokPerSec)) return `${a.tokPerSec.toFixed(1)} tok/s · 首 token ${((a.firstMs || 0) / 1000).toFixed(2)}s`;
+  if (a.failedRepeats) return `已中断/失败 ${a.failedRepeats} 次（无有效样本）`;
   const parts: string[] = [];
   if (Number.isFinite(a.correct)) parts.push(`对 ${a.correct}`);
   if (Number.isFinite(a.incorrect)) parts.push(`错 ${a.incorrect}`);
   if (Number.isFinite(a.unknown) && a.unknown) parts.push(`未知 ${a.unknown}`);
-  if (Number.isFinite(a.total)) parts.push(`共 ${a.total}`);
+  if (Number.isFinite(a.total) && a.total > 0) parts.push(`共 ${a.total}`);
   return parts.join(' / ');
 }
 
