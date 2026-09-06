@@ -178,8 +178,19 @@ function judgeVerdict(judgeRes, kind) {
   return { passed: false, reason: judgeReason(detail, kind), detail };
 }
 
+/**
+ * Generation throughput excluding the first token (TTFT is reported separately):
+ * decode window = last chunk - first chunk, numerator = tokens after the first.
+ */
+function decodeSpeed(tokens, tFirstMs, tLastMs) {
+  const decodeSec = tFirstMs > 0 && tLastMs > tFirstMs ? (tLastMs - tFirstMs) / 1000 : 0;
+  if (decodeSec <= 0) return { decodeSec: 0, tokPerSec: 0 };
+  const n = tokens > 1 ? tokens - 1 : tokens;
+  return { decodeSec, tokPerSec: n / decodeSec };
+}
+
 module.exports = {
-  readJsonl, extractCode,
+  readJsonl, extractCode, decodeSpeed,
   buildLongBenchPrompt, buildHumanEvalPrompt, buildMbppPrompt,
   buildLiveCodeBenchPrompt, buildDs1000Prompt,
   buildDs1000Script, buildLcbFunctionalScript, judgeVerdict, judgeReason,

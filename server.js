@@ -4,7 +4,7 @@ const path = require('path');
 const { scoreChoice, scoreAime, aggregateScore } = require('./server/scoring');
 const { JUDGE_URL, judgeRun, judgeHealth } = require('./server/judge');
 const {
-  readJsonl, extractCode,
+  readJsonl, extractCode, decodeSpeed,
   buildLongBenchPrompt, buildHumanEvalPrompt, buildMbppPrompt,
   buildLiveCodeBenchPrompt, buildDs1000Prompt,
   buildDs1000Script, buildLcbFunctionalScript, judgeVerdict, judgeReason,
@@ -50,10 +50,10 @@ function saveState() {
 
 // defaultLimit: sampled questions when the caller does not pass a limit
 const tasks = [
-  { id: 'smoke_speed', name: '连通性与吐字速度', ability: '实际可用性 / 首 token 与生成速度', kind: 'smoke' },
-  { id: 'gpqa_cached', name: 'GPQA Diamond（缓存题库）', ability: '高难度科学推理与知识整合', kind: 'gpqa', file: 'gpqa_diamond_mc.jsonl', defaultLimit: 198, defaultMaxTokens: 8192 },
-  { id: 'aime_cached', name: 'AIME 2025（缓存题库）', ability: '数学竞赛推理与精确计算', kind: 'aime', file: 'aime_2025.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
-  { id: 'mmlu_pro_cached', name: 'MMLU-Pro（缓存题库）', ability: '广泛知识、学科理解与选择题稳健性', kind: 'mmlu', file: 'MMLU-Pro.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'smoke_speed', name: '连通性与吐字速度', ability: '实际可用性 / 首 token 与生成速度', kind: 'smoke', defaultMaxTokens: 2048 },
+  { id: 'gpqa_cached', name: 'GPQA Diamond（科学推理）', ability: '高难度科学推理与知识整合', kind: 'gpqa', file: 'gpqa_diamond_mc.jsonl', defaultLimit: 198, defaultMaxTokens: 8192 },
+  { id: 'aime_cached', name: 'AIME 2025（数学推理）', ability: '数学竞赛推理与精确计算', kind: 'aime', file: 'aime_2025.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
+  { id: 'mmlu_pro_cached', name: 'MMLU-Pro（综合知识）', ability: '广泛知识、学科理解与选择题稳健性', kind: 'mmlu', file: 'MMLU-Pro.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
   { id: 'longbench2', name: 'LongBench v2（长上下文）', ability: '超长上下文检索、长文推理与指令跟随', kind: 'longbench2', file: 'longbench2.jsonl', defaultLimit: 30, defaultMaxTokens: 2048 },
   { id: 'humanevalplus', name: 'HumanEval+（代码生成）', ability: '函数级 Python 代码生成的正确性（增强测试集）', kind: 'humanevalplus', file: 'humanevalplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
   { id: 'mbppplus', name: 'MBPP+（代码生成）', ability: '基础编程任务代码生成的正确性（增强测试集）', kind: 'mbppplus', file: 'mbppplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
@@ -260,10 +260,15 @@ function logCodeVerdict(run, model, task, qi, count, verdict, modelText) {
 // The scorer is deliberately strict: reasoning without final-answer evidence is unknown, never incorrect.
 async function measure(run, b, model, task, cfgT = {}) {
   if (task.kind === 'smoke') {
-    const t = Date.now();
-    const r = await chat(b, model, '请只回复：测试通过。', { max_tokens: 64, runId: run.id });
-    const ms = Date.now() - t;
-    return { ok: 1, firstMs: ms, tokens: r.tokens || 0, tokPerSec: r.tokPerSec || 0, output: r.text.slice(0, 80) };
+    // 吐字速度要有参考意义：先预热（llama-swap 冷启动加载不算 TTFT），再用一个
+    // 需要持续输出数百 token 的流式请求测 生成速度（不含首 token）与首 token 延迟。
+    const outputLimit = Math.min(16384, Math.max(256, Number(cfgT.maxTokens) || task.defaultMaxTokens || 2048));
+    const w0 = Date.now();
+    const warm = await chat(b, model, '请只回复：OK。', { max_tokens: 16, runId: run.id });
+    logLine(run, `${model} / ${task.name} / 预热完成 ${((Date.now() - w0) / 1000).toFixed(1)}s（含可能的模型加载），响应：${warm.text.trim().slice(0, 30) || '(空)'}`);
+    const s = await chatStream(b, model, SMOKE_PROMPT, { max_tokens: outputLimit, runId: run.id });
+    logLine(run, `${model} / ${task.name} / 首 token ${(s.ttftMs / 1000).toFixed(2)}s · 生成 ${s.tokPerSec.toFixed(1)} tok/s · 共 ${s.tokens} token${s.finishReason === 'length' ? '（达到 max_tokens 上限，速度可信）' : ''}`);
+    return { ok: 1, firstMs: s.ttftMs, tokens: s.tokens, tokPerSec: s.tokPerSec, output: s.text.slice(0, 80) };
   }
 
   const { rows: sample, total } = readJsonl(task.file, taskLimit(cfgT, task));
@@ -361,6 +366,72 @@ function taskLimit(cfgT, task) {
 function verdictLabel(verdict, r) {
   return verdict.status === 'unknown' ? (r.finishReason === 'length' ? '未知（输出达到长度上限）' : '未知（没有明确最终答案）')
     : verdict.status === 'correct' ? '正确' : '错误';
+}
+
+// Sustained-output prompt for the speed probe: long enough that decode speed
+// dominates over TTFT, short enough to finish well inside default max_tokens.
+const SMOKE_PROMPT = '请以“城市清晨”为主题写一篇约800字的散文。要求：语言流畅自然，有具体的画面、声音和细节描写，分3到4个自然段。除正文外不要输出任何解释或标题。';
+
+// Streaming variant used by the speed probe: measures TTFT (first content chunk)
+// and decode throughput over the rest of the generation.
+async function chatStream(b, model, prompt, opts) {
+  const base = (b.endpoint || 'http://127.0.0.1:9292/v1').replace(/\/$/, '');
+  const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream' };
+  if (b.key) headers.Authorization = 'Bearer ' + b.key;
+  const payload = {
+    model, messages: [{ role: 'user', content: prompt }],
+    temperature: 0, max_tokens: opts.max_tokens || 2048, stream: true,
+    stream_options: { include_usage: true },
+    chat_template_kwargs: { enable_thinking: false },
+  };
+  const controller = new AbortController();
+  controllers.set(opts.runId || '', controller);
+  let res;
+  try {
+    res = await fetch(base + '/chat/completions', { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      // Older OpenAI-compatible servers reject stream_options — retry without it.
+      if (/stream_options/i.test(errText)) {
+        delete payload.stream_options;
+        res = await fetch(base + '/chat/completions', { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
+      } else throw Error('HTTP ' + res.status + ' ' + errText.slice(0, 200));
+    }
+  } finally {
+    controllers.delete(opts.runId || '');
+  }
+  if (!res.ok || !res.body) throw Error('HTTP ' + res.status);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '', text = '', chunks = 0, usage = null, finishReason = null, tFirst = 0, tLast = 0;
+  const t0 = Date.now();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      let j; try { j = JSON.parse(data); } catch { continue; }
+      const delta = j.choices?.[0]?.delta || {};
+      if (typeof delta.content === 'string' && delta.content) {
+        text += delta.content; chunks++;
+        if (!tFirst) tFirst = Date.now();
+        tLast = Date.now();
+      }
+      if (j.usage) usage = j.usage;
+      if (j.choices?.[0]?.finish_reason) finishReason = j.choices[0].finish_reason;
+    }
+  }
+  const tokens = usage?.completion_tokens || chunks;
+  const ttftMs = tFirst ? tFirst - t0 : Date.now() - t0;
+  const speed = decodeSpeed(tokens, tFirst, tLast);
+  return { text, tokens, ttftMs, tokPerSec: speed.tokPerSec, finishReason };
 }
 
 async function chat(b, model, prompt, opts) {

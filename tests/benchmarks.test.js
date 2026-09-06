@@ -2,8 +2,15 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   extractCode, buildLongBenchPrompt, buildDs1000Script, buildLcbFunctionalScript,
-  judgeVerdict, judgeReason, readJsonl,
+  judgeVerdict, judgeReason, readJsonl, decodeSpeed,
 } = require('../server/runners');
+
+test('decodeSpeed excludes the first token (TTFT) from throughput', () => {
+  assert.deepEqual(decodeSpeed(0, 0, 0), { decodeSec: 0, tokPerSec: 0 });
+  const s = decodeSpeed(101, 1000, 11000); // 10s decode window, 100 tokens after the first
+  assert.equal(s.decodeSec, 10);
+  assert.equal(s.tokPerSec, 10);
+});
 
 test('extractCode handles fenced python blocks', () => {
   assert.equal(extractCode('Sure!\n```python\ndef f():\n    return 1\n```\nDone.'), 'def f():\n    return 1');

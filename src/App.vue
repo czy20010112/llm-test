@@ -50,9 +50,6 @@ async function refreshPreflight() {
 async function refreshTasks() {
   try { tasks.value = await api('/api/tasks'); } catch { tasks.value = []; }
 }
-async function refreshRuns() {
-  try { runs.value = await api('/api/runs'); } catch { /* keep last */ }
-}
 async function fetchModels() {
   loadingModels.value = true;
   try {
@@ -83,7 +80,64 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.clearInterval(timer);
   document.removeEventListener('click', closeMenus);
+  for (const t of toastTimers.values()) window.clearTimeout(t);
 });
+
+// ---------- 完成通知：跳转历史 或 右上角 toast（自动消失 + 手动红叉） ----------
+const toasts = ref<{ id: string; text: string; sub: string }[]>([]);
+const toastTimers = new Map<string, number>();
+const prevStatuses = new Map<string, string>();
+let statusSeeded = false;
+
+function doneText(s: string) {
+  return s === 'done' ? '测试完成' : s === 'partial' ? '已中断' : s === 'error' || s === 'crashed' ? '已结束（有错误）' : statusText(s);
+}
+function pushToast(run: any) {
+  toasts.value = [...toasts.value.filter((t) => t.id !== run.id), {
+    id: run.id,
+    text: `${run.name} · ${doneText(run.status)}`,
+    sub: '点击查看逐题日志',
+  }];
+  toastTimers.set(run.id, window.setTimeout(() => dismissToast(run.id), 6500));
+}
+function dismissToast(id: string) {
+  const t = toastTimers.get(id);
+  if (t) { window.clearTimeout(t); toastTimers.delete(id); }
+  toasts.value = toasts.value.filter((x) => x.id !== id);
+}
+function toastClick(id: string) {
+  dismissToast(id);
+  openRunLog(id);
+}
+// 历史记录中打开某次运行的逐题日志并滚到底部（DOM 操作避免 :open 绑定和手动开合打架）
+function openRunLog(id: string) {
+  select('history');
+  window.setTimeout(() => {
+    const card = document.querySelector<HTMLElement>(`.run-card[data-run-id="${id}"]`);
+    if (!card) return;
+    const details = card.querySelector('details');
+    if (details) details.open = true;
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const log = card.querySelector<HTMLElement>('.log');
+    if (log) log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
+  }, 380); // 等待视图过渡完成
+}
+
+async function refreshRuns() {
+  try {
+    const fresh = await api('/api/runs');
+    runs.value = fresh;
+    for (const r of fresh) {
+      const prev = prevStatuses.get(r.id);
+      if (statusSeeded && prev === 'running' && r.status !== 'running') {
+        if (active.value === 'queue') openRunLog(r.id);
+        else pushToast(r);
+      }
+      prevStatuses.set(r.id, r.status);
+    }
+    statusSeeded = true;
+  } catch { /* keep last */ }
+}
 
 // auto-scroll open queue logs to the bottom as they grow
 watch(() => runs.value.map((r) => (r.log || []).length).join(','), () => {
@@ -242,18 +296,72 @@ const compareRows = computed(() => {
   const names = new Set<string>();
   for (const run of finishedRuns.value) {
     if (!comparePicks.value.includes(run.id)) continue;
-    for (const row of run.rows || []) names.add(row.task);
+    for (const row of run.rows || []) names.add(normTask(row.task));
   }
   return [...names].sort((a, b) => (taskOrder.get(a) ?? 99) - (taskOrder.get(b) ?? 99));
 });
 function compareCell(task: string, col: { runId: string; model: string }) {
   const run = finishedRuns.value.find((r) => r.id === col.runId);
-  const row = run && (run.rows || []).find((r: any) => r.task === task && r.model === col.model);
+  const row = run && (run.rows || []).find((r: any) => normTask(r.task) === task && r.model === col.model);
   return row ? { score: row.average?.score, detail: scoreDetail(row) } : null;
 }
 function cellScore(task: string, col: { runId: string; model: string }): string {
   const cell = compareCell(task, col);
   return cell && cell.score != null ? (cell.score * 100).toFixed(1) + '%' : '—';
+}
+
+// 历史行里的旧题库名称（“…（缓存题库）”）归一到当前口径，老结果也能和新结果同表对比
+const TASK_ALIAS: Record<string, string> = {
+  'GPQA Diamond（缓存题库）': 'GPQA Diamond（科学推理）',
+  'AIME 2025（缓存题库）': 'AIME 2025（数学推理）',
+  'MMLU-Pro（缓存题库）': 'MMLU-Pro（综合知识）',
+};
+const normTask = (n: string) => TASK_ALIAS[n] || n;
+
+// ---------- 对比分析：维度雷达图（轴=本次覆盖的项目，系列=运行×模型，默认不绘制） ----------
+const RADAR_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
+const radarPicks = ref<string[]>([]);
+const radarOptions = computed(() => compareCols.value.map((col) => ({ key: `${col.runId}\u0000${col.model}`, col })));
+const radarActive = computed(() => radarOptions.value.filter((o) => radarPicks.value.includes(o.key)));
+function toggleRadar(key: string) {
+  const i = radarPicks.value.indexOf(key);
+  if (i >= 0) radarPicks.value.splice(i, 1); else radarPicks.value.push(key);
+}
+function radarColor(key: string) {
+  const i = radarOptions.value.findIndex((o) => o.key === key);
+  return RADAR_COLORS[(i < 0 ? 0 : i) % RADAR_COLORS.length];
+}
+const R_W = 420, R_H = 340, R_CX = 210, R_CY = 172, R_R = 118;
+function radarAngle(i: number, n: number) { return -Math.PI / 2 + (2 * Math.PI * i) / n; }
+function radarPt(i: number, n: number, r: number) {
+  const a = radarAngle(i, n);
+  return { x: R_CX + r * Math.cos(a), y: R_CY + r * Math.sin(a) };
+}
+function radarRing(frac: number): string {
+  const n = compareRows.value.length;
+  return Array.from({ length: n }, (_, i) => {
+    const p = radarPt(i, n, R_R * frac);
+    return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+  }).join(' ');
+}
+const shortTask = (t: string) => t.replace(/（[^）]*）/, '');
+function radarLabel(i: number) {
+  const n = compareRows.value.length;
+  const p = radarPt(i, n, R_R + 12);
+  const cos = Math.cos(radarAngle(i, n));
+  return { x: p.x, y: p.y + 4, anchor: Math.abs(cos) < 0.35 ? 'middle' : cos > 0 ? 'start' : 'end' };
+}
+function radarValue(key: string, task: string): number | null {
+  const [runId, model] = key.split('\u0000');
+  const cell = compareCell(task, { runId, model });
+  return cell && cell.score != null ? Math.round(cell.score * 1000) / 10 : null;
+}
+function radarDots(key: string) {
+  const n = compareRows.value.length;
+  return compareRows.value.map((task, i) => radarPt(i, n, (R_R * Math.max(0, Math.min(100, radarValue(key, task) ?? 0))) / 100));
+}
+function radarPolygon(key: string): string {
+  return radarDots(key).map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
 }
 
 // ---------- 环境设置 ----------
@@ -450,7 +558,7 @@ async function saveProfile() {
         <!-- 历史记录 -->
         <template v-else-if="active === 'history'">
           <p v-if="!finishedRuns.length" class="soft">暂无完成的结果。</p>
-          <article v-for="r in finishedRuns" :key="r.id" class="run-card">
+          <article v-for="r in finishedRuns" :key="r.id" class="run-card" :data-run-id="r.id">
             <header>
               <strong>{{ r.name }}</strong>
               <span class="badge" :class="r.status">{{ statusText(r.status) }}</span>
@@ -481,32 +589,69 @@ async function saveProfile() {
           </article>
         </template>
 
-        <!-- 对比分析：行=测试项目，列=结果名称×模型 -->
+        <!-- 对比分析：行=测试项目，列=结果名称×模型，下方维度雷达图 -->
         <template v-else-if="active === 'compare'">
           <p v-if="!comparePicks.length" class="soft">在"历史记录"中把若干次运行"选入对比"，这里会按测试项目逐行对比每个模型的表现。</p>
-          <table v-else class="table compare">
-            <thead>
-              <tr>
-                <th class="c-run">测试项目</th>
-                <th v-for="col in compareCols" :key="col.runId + col.model">
-                  <span class="col-task">{{ col.runName }}</span>
-                  <span class="col-model soft">{{ col.model }}</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="task in compareRows" :key="task">
-                <td class="c-run"><strong>{{ task }}</strong></td>
-                <td v-for="col in compareCols" :key="col.runId + col.model">
-                  <template v-if="compareCell(task, col)">
-                    <strong>{{ cellScore(task, col) }}</strong>
-                    <br /><small class="soft">{{ compareCell(task, col)!.detail }}</small>
-                  </template>
-                  <template v-else>—</template>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <template v-else>
+            <table class="table compare">
+              <thead>
+                <tr>
+                  <th class="c-run">测试项目</th>
+                  <th v-for="col in compareCols" :key="col.runId + col.model">
+                    <span class="col-task">{{ col.runName }}</span>
+                    <span class="col-model soft">{{ col.model }}</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="task in compareRows" :key="task">
+                  <td class="c-run"><strong>{{ task }}</strong></td>
+                  <td v-for="col in compareCols" :key="col.runId + col.model">
+                    <template v-if="compareCell(task, col)">
+                      <strong>{{ cellScore(task, col) }}</strong>
+                      <br /><small class="soft">{{ compareCell(task, col)!.detail }}</small>
+                    </template>
+                    <template v-else>—</template>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div class="panel radar-panel">
+              <h3>维度雷达图</h3>
+              <div class="radar-legend">
+                <button
+                  v-for="opt in radarOptions" :key="opt.key" type="button"
+                  class="legend-chip" :class="{ on: radarPicks.includes(opt.key) }"
+                  :style="radarPicks.includes(opt.key) ? { borderColor: radarColor(opt.key), color: radarColor(opt.key) } : undefined"
+                  @click="toggleRadar(opt.key)"
+                >
+                  <span class="chip-dot" :style="{ background: radarColor(opt.key) }"></span>
+                  {{ opt.col.runName }} · {{ opt.col.model }}
+                </button>
+              </div>
+              <div v-if="compareRows.length >= 3" class="radar-wrap">
+                <svg :viewBox="`0 0 ${R_W} ${R_H}`" role="img" aria-label="对比维度雷达图">
+                  <polygon v-for="f in [0.25, 0.5, 0.75, 1]" :key="`ring${f}`" :points="radarRing(f)" class="ring" />
+                  <line
+                    v-for="(task, i) in compareRows" :key="`ax${i}`"
+                    :x1="R_CX" :y1="R_CY"
+                    :x2="radarPt(i, compareRows.length, R_R).x" :y2="radarPt(i, compareRows.length, R_R).y" class="axis"
+                  />
+                  <text
+                    v-for="(task, i) in compareRows" :key="`lb${i}`"
+                    :x="radarLabel(i).x" :y="radarLabel(i).y" :text-anchor="radarLabel(i).anchor" class="axis-label"
+                  >{{ shortTask(task) }}</text>
+                  <g v-for="s in radarActive" :key="s.key">
+                    <polygon :points="radarPolygon(s.key)" class="series" :fill="radarColor(s.key)" :stroke="radarColor(s.key)" />
+                    <circle v-for="(p, i) in radarDots(s.key)" :key="i" :cx="p.x" :cy="p.y" r="3" :fill="radarColor(s.key)" />
+                  </g>
+                </svg>
+                <p class="soft radar-note">外圈 = 100% · 勾选图例绘制曲线 · 本次未覆盖的项目按 0 绘制</p>
+              </div>
+              <p v-else class="soft">本次对比覆盖的项目不足 3 项，雷达图至少需要 3 个维度。</p>
+            </div>
+          </template>
         </template>
 
         <!-- 协议与基线 -->
@@ -521,7 +666,7 @@ async function saveProfile() {
                 <td>{{ t.name }}</td>
                 <td>{{ t.ability }}</td>
                 <td class="soft">{{ ({
-                  smoke: '请求成功 + 首 token 延迟 + tok/s',
+                  smoke: '预热后流式请求：首 token 延迟 + 生成速度（不含首 token）',
                   gpqa: '选项字母精确匹配',
                   aime: '整数答案精确匹配',
                   mmlu: '选项字母精确匹配',
@@ -559,6 +704,19 @@ async function saveProfile() {
       </section>
       </Transition>
     </main>
+
+    <!-- 完成通知（右上角，自动消失，红叉手动关闭） -->
+    <div class="toast-stack" aria-live="polite">
+      <TransitionGroup name="toast">
+        <div v-for="t in toasts" :key="t.id" class="toast" role="status" @click="toastClick(t.id)">
+          <div class="toast-body">
+            <strong>{{ t.text }}</strong>
+            <small>{{ t.sub }}</small>
+          </div>
+          <button class="toast-x" type="button" aria-label="关闭通知" @click.stop="dismissToast(t.id)">×</button>
+        </div>
+      </TransitionGroup>
+    </div>
 
     <!-- 删除确认弹窗 -->
     <Transition name="fade">
@@ -771,6 +929,49 @@ summary { cursor: pointer; color: var(--color-ink-soft); font-size: 13px; }
 .danger-solid { background: var(--color-danger) !important; border-color: var(--color-danger) !important; color: #fff !important; }
 .danger-solid:hover { filter: brightness(1.08); }
 
+/* 完成通知 toast（右上角横板卡片） */
+.toast-stack { position: fixed; top: 18px; right: 18px; z-index: 80; display: flex; flex-direction: column; gap: 10px; width: min(360px, 90vw); }
+.toast {
+  display: flex; align-items: center; gap: 10px; padding: 11px 12px 11px 14px; cursor: pointer;
+  background: var(--color-paper-raised); border: 1px solid var(--color-line); border-left: 3px solid var(--color-teal);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-card);
+}
+.toast-body { flex: 1; min-width: 0; }
+.toast-body strong { display: block; font-size: 13px; }
+.toast-body small { color: var(--color-ink-soft); font-size: 12px; }
+.toast-x {
+  flex: none; width: 22px; height: 22px; border: 0; border-radius: 50%; background: transparent;
+  color: var(--color-danger); font-size: 15px; line-height: 1; cursor: pointer;
+}
+.toast-x:hover { background: var(--color-coral-soft); }
+.toast-enter-active, .toast-leave-active, .toast-move { transition: all .25s cubic-bezier(.16, 1, .3, 1); }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(24px); }
+
+/* 对比维度雷达图 */
+.radar-panel { margin-top: 16px; }
+.radar-legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 6px; }
+.legend-chip {
+  display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; max-width: 100%;
+  border: 1px solid var(--color-line); border-radius: 999px; background: var(--color-paper);
+  color: var(--color-ink); font-size: 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background var(--motion-fast);
+}
+.legend-chip .chip-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.legend-chip:hover { background: var(--color-teal-soft); }
+.legend-chip.on { background: var(--color-paper-raised); font-weight: 600; }
+.radar-wrap { max-width: 480px; margin: 4px auto 0; }
+.radar-wrap svg { width: 100%; height: auto; display: block; }
+.ring { fill: none; stroke: var(--color-line); }
+.axis { stroke: var(--color-line); }
+.axis-label { fill: var(--color-ink-soft); font-size: 11px; }
+.series {
+  fill-opacity: .13; stroke-width: 2; stroke-linejoin: round;
+  animation: radar-in .35s cubic-bezier(.16, 1, .3, 1);
+  transform-box: fill-box; transform-origin: center;
+}
+@keyframes radar-in { from { opacity: 0; transform: scale(.94); } }
+.radar-note { text-align: center; margin: 6px 0 0; }
+
 /* 动效（参考 Precision Lab：短促、克制的缓动） */
 .view-enter-active { transition: opacity .22s cubic-bezier(.16, 1, .3, 1), transform .22s cubic-bezier(.16, 1, .3, 1); }
 .view-leave-active { transition: opacity .12s ease; }
@@ -793,5 +994,6 @@ summary { cursor: pointer; color: var(--color-ink-soft); font-size: 13px; }
 @media (prefers-reduced-motion: reduce) {
   .view-enter-active, .view-leave-active, .fade-enter-active, .fade-leave-active { transition: none; }
   .badge.running, .sidenav-foot .dot { animation: none; }
+  .toast-enter-active, .toast-leave-active, .toast-move, .series { transition: none; animation: none; }
 }
 </style>

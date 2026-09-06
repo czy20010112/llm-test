@@ -70,3 +70,69 @@ test('queue shows only running runs; history lists finished runs', async ({ page
   await expect(page.getByText('已完成的评测')).toBeVisible();
   await expect(page.getByText('运行中的评测')).toBeHidden();
 });
+
+test('completion on another view shows a dismissible toast', async ({ page }) => {
+  let done = false;
+  const run = (status: string) => ({
+    id: 'r1', name: '速度对比', status, models: ['m1'], tasks: ['t1'],
+    progress: { modelIndex: 0 }, log: [],
+    rows: status === 'running' ? [] : [{ model: 'm1', task: '连通性与吐字速度', repeat: 1, average: { ok: 1, firstMs: 320, tokens: 512, tokPerSec: 42.5 }, log: [] }],
+  });
+  await page.route('**/api/runs', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify([run(done ? 'done' : 'running')]) }));
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2400); // 首轮轮询种下 running 状态
+  done = true;
+  await page.waitForTimeout(2600); // 下一次轮询应弹出 toast
+  const toast = page.locator('.toast');
+  await expect(toast).toContainText('速度对比 · 测试完成');
+  await toast.getByRole('button', { name: '关闭通知' }).click();
+  await expect(page.locator('.toast')).toHaveCount(0);
+});
+
+test('completion while watching the queue jumps to history with logs expanded', async ({ page }) => {
+  let done = false;
+  await page.route('**/api/runs', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      id: 'r1', name: '跳转测试', status: done ? 'done' : 'running', models: ['m1'], tasks: ['t1'],
+      progress: { modelIndex: 0 }, log: ['line1', 'line2'],
+      rows: done ? [{ model: 'm1', task: '连通性与吐字速度', repeat: 1, average: { ok: 1, firstMs: 320, tokens: 512, tokPerSec: 42.5 }, log: [] }] : [],
+    }]),
+  }));
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: '运行队列' }).click();
+  await expect(page.getByText('跳转测试')).toBeVisible();
+  await page.waitForTimeout(2400);
+  done = true;
+  await page.waitForTimeout(3400); // 轮询检测 + 跳转动画 + 日志展开
+  await expect(page.locator('.view-title')).toHaveText('历史记录');
+  const card = page.locator('.run-card[data-run-id="r1"]');
+  await expect(card).toBeVisible();
+  await expect(card.locator('details')).toHaveJSProperty('open', true);
+});
+
+test('compare view: radar chart with selectable series and old-name normalization', async ({ page }) => {
+  await page.route('**/api/runs', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      id: 'r1', name: '结果A', status: 'done', models: ['m1', 'm2'], tasks: ['t1'], log: [],
+      rows: ['GPQA Diamond（缓存题库）', 'AIME 2025（缓存题库）', 'MMLU-Pro（缓存题库）'].flatMap((task, i) => [
+        { model: 'm1', task, repeat: 1, average: { score: 0.9 - i * 0.1, correct: 9 - i, total: 10 }, log: [] },
+        { model: 'm2', task, repeat: 1, average: { score: 0.6 - i * 0.1, correct: 6 - i, total: 10 }, log: [] },
+      ]),
+    }]),
+  }));
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: '历史记录' }).click();
+  await page.getByRole('button', { name: '选入对比' }).click();
+  await page.getByRole('button', { name: '对比分析' }).click();
+  await expect(page.locator('.radar-panel')).toBeVisible();
+  // 旧名称（缓存题库）在对比表中按新口径显示
+  await expect(page.locator('.table.compare')).toContainText('GPQA Diamond（科学推理）');
+  // 默认不绘制任何曲线，勾选图例后逐条出现
+  await expect(page.locator('svg .series')).toHaveCount(0);
+  await page.locator('.legend-chip').first().click();
+  await expect(page.locator('svg .series')).toHaveCount(1);
+  await page.locator('.legend-chip').nth(1).click();
+  await expect(page.locator('svg .series')).toHaveCount(2);
+});
