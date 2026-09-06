@@ -1,20 +1,28 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { lang, setLang, t } from './i18n';
 
-const views = [
-  { id: 'overview', label: '总览' },
-  { id: 'new', label: '新建评测' },
-  { id: 'queue', label: '运行队列' },
-  { id: 'history', label: '历史记录' },
-  { id: 'compare', label: '对比分析' },
-  { id: 'protocols', label: '协议与基线' },
-  { id: 'settings', label: '环境设置' },
-] as const;
+type ViewId = 'overview' | 'new' | 'queue' | 'history' | 'compare' | 'protocols' | 'settings';
 
-type ViewId = (typeof views)[number]['id'];
+const views = computed(() => [
+  { id: 'overview' as ViewId, label: t('总览', 'Overview') },
+  { id: 'new' as ViewId, label: t('新建评测', 'New Run') },
+  { id: 'queue' as ViewId, label: t('运行队列', 'Queue') },
+  { id: 'history' as ViewId, label: t('历史记录', 'History') },
+  { id: 'compare' as ViewId, label: t('对比分析', 'Compare') },
+  { id: 'protocols' as ViewId, label: t('协议与基线', 'Protocols') },
+  { id: 'settings' as ViewId, label: t('环境设置', 'Settings') },
+]);
 
 const active = ref<ViewId>('overview');
-const activeView = computed(() => views.find((v) => v.id === active.value)!);
+const activeView = computed(() => views.value.find((v) => v.id === active.value)!);
+
+// 服务端任务的双语展示（任务名/能力）；历史行数据保持原样
+const taskName = (task: any) => (lang.value === 'en' && task?.name_en ? task.name_en : task?.name || '');
+const taskAbility = (task: any) => (lang.value === 'en' && task?.ability_en ? task.ability_en : task?.ability || '');
+function toggleLang() {
+  setLang(lang.value === 'zh' ? 'en' : 'zh');
+}
 
 function select(id: ViewId) {
   active.value = id;
@@ -59,9 +67,9 @@ async function fetchModels() {
       body: JSON.stringify({ endpoint: cfg.value.endpoint, key: cfg.value.key }),
     });
     models.value = (body.data || []).map((m: any) => ({ id: String(m.id), name: m.name ? String(m.name) : undefined, description: m.description ? String(m.description) : undefined }));
-    flash('ok', `已获取 ${models.value.length} 个模型`);
+    flash('ok', `${t('已获取', 'Fetched')} ${models.value.length} ${t('个模型', 'models')}`);
   } catch (e: any) {
-    flash('err', '获取模型失败：' + e.message);
+    flash('err', t('获取模型失败：', 'Failed to fetch models: ') + e.message);
   } finally {
     loadingModels.value = false;
   }
@@ -80,7 +88,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   window.clearInterval(timer);
   document.removeEventListener('click', closeMenus);
-  for (const t of toastTimers.values()) window.clearTimeout(t);
+  for (const timer of toastTimers.values()) window.clearTimeout(timer);
 });
 
 // ---------- 完成通知：跳转历史 或 右上角 toast（自动消失 + 手动红叉） ----------
@@ -90,19 +98,22 @@ const prevStatuses = new Map<string, string>();
 let statusSeeded = false;
 
 function doneText(s: string) {
-  return s === 'done' ? '测试完成' : s === 'partial' ? '已中断' : s === 'error' || s === 'crashed' ? '已结束（有错误）' : statusText(s);
+  return s === 'done' ? t('测试完成', 'finished')
+    : s === 'partial' ? t('已中断', 'stopped')
+    : s === 'error' || s === 'crashed' ? t('已结束（有错误）', 'ended with errors')
+    : statusText(s);
 }
 function pushToast(run: any) {
-  toasts.value = [...toasts.value.filter((t) => t.id !== run.id), {
+  toasts.value = [...toasts.value.filter((x) => x.id !== run.id), {
     id: run.id,
     text: `${run.name} · ${doneText(run.status)}`,
-    sub: '点击查看逐题日志',
+    sub: t('点击查看逐题日志', 'Click to open per-item logs'),
   }];
   toastTimers.set(run.id, window.setTimeout(() => dismissToast(run.id), 6500));
 }
 function dismissToast(id: string) {
-  const t = toastTimers.get(id);
-  if (t) { window.clearTimeout(t); toastTimers.delete(id); }
+  const timer = toastTimers.get(id);
+  if (timer) { window.clearTimeout(timer); toastTimers.delete(id); }
   toasts.value = toasts.value.filter((x) => x.id !== id);
 }
 function toastClick(id: string) {
@@ -149,7 +160,10 @@ watch(() => runs.value.map((r) => (r.log || []).length).join(','), () => {
 });
 
 function statusText(s: string) {
-  return ({ running: '运行中', done: '已完成', error: '有错误', partial: '已中断', crashed: '崩溃' } as Record<string, string>)[s] || s;
+  return ({
+    running: t('运行中', 'Running'), done: t('已完成', 'Done'), error: t('有错误', 'Error'),
+    partial: t('已中断', 'Stopped'), crashed: t('崩溃', 'Crashed'),
+  } as Record<string, string>)[s] || s;
 }
 
 // ---------- 新建评测：模型（逐栏下拉，选中后自动拉出下一栏） ----------
@@ -190,7 +204,7 @@ function removeTaskRow(i: number) {
 }
 
 async function submitRun() {
-  if (!selectedModels.value.length) { flash('err', '请至少选择一个模型'); return; }
+  if (!selectedModels.value.length) { flash('err', t('请至少选择一个模型', 'Select at least one model')); return; }
   const taskPayload = taskRows.value
     .filter((r) => r.task)
     .map((r) => {
@@ -200,14 +214,14 @@ async function submitRun() {
       }
       return t;
     });
-  if (!taskPayload.length) { flash('err', '请至少选择一个测试项目'); return; }
+  if (!taskPayload.length) { flash('err', t('请至少选择一个测试项目', 'Select at least one benchmark')); return; }
   try {
     await api('/api/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: form.name, note: form.note, models: selectedModels.value, tasks: taskPayload }),
     });
-    flash('ok', '评测已加入运行队列');
+    flash('ok', t('评测已加入运行队列', 'Run queued'));
     select('queue');
     refreshRuns();
   } catch (e: any) {
@@ -220,7 +234,7 @@ const form = ref({ name: '本地模型评测', note: '' });
 async function cancelRun(id: string) {
   try {
     await api(`/api/runs/${id}`, { method: 'DELETE' });
-    flash('ok', '已请求中断');
+    flash('ok', t('已请求中断', 'Cancellation requested'));
     refreshRuns();
   } catch (e: any) { flash('err', e.message); }
 }
@@ -236,7 +250,7 @@ async function confirmDelete() {
   try {
     await api(`/api/results/${run.id}`, { method: 'DELETE' });
     comparePicks.value = comparePicks.value.filter((x) => x !== run.id);
-    flash('ok', `已删除「${run.name}」`);
+    flash('ok', `${t('已删除「', 'Deleted "')}${run.name}${t('」', '"')}`);
     refreshRuns();
   } catch (e: any) { flash('err', e.message); }
   pendingDelete.value = null;
@@ -271,13 +285,13 @@ function scoreOf(row: any) {
 }
 function scoreDetail(row: any) {
   const a = row.average || {};
-  if (Number.isFinite(a.tokPerSec)) return `${a.tokPerSec.toFixed(1)} tok/s · 首 token ${((a.firstMs || 0) / 1000).toFixed(2)}s`;
-  if (a.failedRepeats) return `已中断/失败 ${a.failedRepeats} 次（无有效样本）`;
+  if (Number.isFinite(a.tokPerSec)) return `${a.tokPerSec.toFixed(1)} tok/s · ${t('首 token', 'TTFT')} ${((a.firstMs || 0) / 1000).toFixed(2)}s`;
+  if (a.failedRepeats) return t(`已中断/失败 ${a.failedRepeats} 次（无有效样本）`, `${a.failedRepeats} repeat(s) interrupted/failed - no valid samples`);
   const parts: string[] = [];
-  if (Number.isFinite(a.correct)) parts.push(`对 ${a.correct}`);
-  if (Number.isFinite(a.incorrect)) parts.push(`错 ${a.incorrect}`);
-  if (Number.isFinite(a.unknown) && a.unknown) parts.push(`未知 ${a.unknown}`);
-  if (Number.isFinite(a.total) && a.total > 0) parts.push(`共 ${a.total}`);
+  if (Number.isFinite(a.correct)) parts.push(`${t('对', 'ok')} ${a.correct}`);
+  if (Number.isFinite(a.incorrect)) parts.push(`${t('错', 'bad')} ${a.incorrect}`);
+  if (Number.isFinite(a.unknown) && a.unknown) parts.push(`${t('未知', 'unknown')} ${a.unknown}`);
+  if (Number.isFinite(a.total) && a.total > 0) parts.push(`${t('共', 'of')} ${a.total}`);
   return parts.join(' / ');
 }
 
@@ -350,7 +364,7 @@ function radarRing(frac: number): string {
     return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
   }).join(' ');
 }
-const shortTask = (t: string) => t.replace(/（[^）]*）/, '');
+const shortTask = (name: string) => name.replace(/（[^）]*）/, '');
 function radarLabel(i: number) {
   const n = compareRows.value.length;
   const p = radarPt(i, n, R_R + 12);
@@ -395,7 +409,7 @@ async function saveProfile() {
   localStorage.setItem('llmCfg', JSON.stringify(cfg.value));
   try {
     await api('/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...profile.value, models }) });
-    flash('ok', '连接设置已保存');
+    flash('ok', t('连接设置已保存', 'Connection settings saved'));
   } catch (e: any) { flash('err', e.message); }
   refreshPreflight();
 }
@@ -407,11 +421,11 @@ async function saveProfile() {
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">测</span>
         <div class="brand-text">
-          <strong>模型测评台</strong>
+          <strong>{{ t('模型测评台', 'Model Eval Lab') }}</strong>
           <small>Precision Lab</small>
         </div>
       </div>
-      <nav class="nav" aria-label="主导航">
+      <nav class="nav" :aria-label="t('主导航', 'Main navigation')">
         <button
           v-for="v in views"
           :key="v.id"
@@ -425,8 +439,11 @@ async function saveProfile() {
         </button>
       </nav>
       <div class="sidenav-foot">
+        <button class="nav-item lang-toggle" type="button" @click="toggleLang" :title="t('切换语言', 'Switch language')">
+          {{ lang === 'zh' ? 'EN' : '中文' }}
+        </button>
         <span class="dot-row">
-          <span class="dot" :class="preflight?.judge?.ok ? 'ok' : 'bad'" :title="preflight?.judge?.ok ? '判题沙箱在线' : '判题沙箱离线'"></span>
+          <span class="dot" :class="preflight?.judge?.ok ? 'ok' : 'bad'" :title="preflight?.judge?.ok ? t('判题沙箱在线', 'Judge sandbox online') : t('判题沙箱离线', 'Judge sandbox offline')"></span>
           judge
         </span>
       </div>
@@ -443,28 +460,28 @@ async function saveProfile() {
         <template v-if="active === 'overview'">
           <div class="cards">
             <div class="card">
-              <h3>推理服务</h3>
+              <h3>{{ t('推理服务', 'Inference endpoint') }}</h3>
               <p class="mono">{{ cfg.endpoint }}</p>
-              <p>{{ models.length ? `${models.length} 个模型可测` : '尚未获取模型列表（环境设置）' }}</p>
-              <button class="btn" @click="select('new')">开始评测</button>
+              <p>{{ models.length ? `${models.length} ${t('个模型可测', 'models ready')}` : t('尚未获取模型列表（环境设置）', 'No model list yet (Settings)') }}</p>
+              <button class="btn" @click="select('new')">{{ t('开始评测', 'Start a run') }}</button>
             </div>
             <div class="card">
-              <h3>判题沙箱</h3>
+              <h3>{{ t('判题沙箱', 'Judge sandbox') }}</h3>
               <p>
                 <span class="dot big" :class="preflight?.judge?.ok ? 'ok' : 'bad'"></span>
-                {{ preflight?.judge?.ok ? '在线（Docker 隔离，无外网）' : '离线 — 代码类评测不可用' }}
+                {{ preflight?.judge?.ok ? t('在线（Docker 隔离，无外网）', 'Online (Docker isolated, no egress)') : t('离线 — 代码类评测不可用', 'Offline — code benchmarks unavailable') }}
               </p>
-              <p class="soft">代码与指令遵循判分依赖沙箱：HumanEval+ / MBPP+ / LiveCodeBench / DS-1000 / IFEval / IFBench</p>
+              <p class="soft">{{ t('代码与指令遵循判分依赖沙箱：', 'Sandbox-scored benchmarks:') }} HumanEval+ / MBPP+ / LiveCodeBench / DS-1000 / IFEval / IFBench</p>
             </div>
             <div class="card">
-              <h3>正在运行</h3>
+              <h3>{{ t('正在运行', 'Running now') }}</h3>
               <p class="big-num">{{ runningRuns.length }}</p>
-              <p>历史记录 {{ finishedRuns.length }} 次</p>
+              <p>{{ t('历史记录', 'History') }} {{ finishedRuns.length }} {{ t('次', 'runs') }}</p>
             </div>
             <div class="card">
-              <h3>测试协议</h3>
+              <h3>{{ t('测试协议', 'Protocols') }}</h3>
               <p class="big-num">{{ tasks.length }}</p>
-              <p>1 连通性 + 4 知识/长文 + 4 代码 + 2 指令遵循 + 2 安全</p>
+              <p>{{ t('1 连通性 + 4 知识/长文 + 4 代码 + 2 指令遵循 + 2 安全', '1 speed + 4 knowledge/long-ctx + 4 code + 2 instruction + 2 safety') }}</p>
             </div>
           </div>
         </template>
@@ -473,22 +490,22 @@ async function saveProfile() {
         <template v-else-if="active === 'new'">
           <div class="panel head-row">
             <div class="row">
-              <label>结果名称</label>
-              <input v-model="form.name" type="text" class="input" placeholder="例如：Qwen3.8 Q8 vs Q6K" />
+              <label>{{ t('结果名称', 'Run name') }}</label>
+              <input v-model="form.name" type="text" class="input" :placeholder="t('例如：Qwen3.8 Q8 vs Q6K', 'e.g. Qwen3.8 Q8 vs Q6K')" />
             </div>
             <div class="row grow">
-              <label>备注</label>
-              <input v-model="form.note" type="text" class="input" placeholder="可选" />
+              <label>{{ t('备注', 'Note') }}</label>
+              <input v-model="form.note" type="text" class="input" :placeholder="t('可选', 'optional')" />
             </div>
           </div>
 
           <fieldset class="panel">
-            <legend>模型（自上而下即执行顺序，选中后自动出现下一栏）</legend>
+            <legend>{{ t('模型（自上而下即执行顺序，选中后自动出现下一栏）', 'Models (top-down execution order; picking one reveals the next row)') }}</legend>
             <div class="rows-list">
               <div v-for="(m, i) in modelRows" :key="`m${i}`" class="row-line">
                 <span class="idx">{{ i + 1 }}</span>
                 <select v-model="modelRows[i]" class="input wide" :aria-label="`模型 ${i + 1}`" @change="onModelPicked(i)">
-                  <option value="" disabled>选择模型…</option>
+                  <option value="" disabled>{{ t('选择模型…', 'Pick a model…') }}</option>
                   <option v-for="opt in models" :key="opt.id" :value="opt.id">
                     {{ opt.id }} - {{ opt.name || '—' }}{{ opt.description ? ` - ${opt.description}` : '' }}
                   </option>
@@ -498,21 +515,21 @@ async function saveProfile() {
                   :aria-label="`移除模型 ${i + 1}`" @click="removeModelRow(i)"
                 >×</button>
               </div>
-              <p v-if="!models.length" class="soft">模型列表为空 — 请先到"环境设置"填写端点并获取模型。</p>
+              <p v-if="!models.length" class="soft">{{ t('模型列表为空 — 请先到"环境设置"填写端点并获取模型。', 'Model list is empty - set the endpoint and fetch models in Settings first.') }}</p>
             </div>
           </fieldset>
 
           <fieldset class="panel">
-            <legend>测试项目（每行一项，参数可留空用默认值，选中后自动出现下一行）</legend>
+            <legend>{{ t('测试项目（每行一项，参数可留空用默认值，选中后自动出现下一行）', 'Benchmarks (one per row; blank fields use defaults; picking one reveals the next row)') }}</legend>
             <table class="task-table">
               <thead>
                 <tr>
-                  <th class="c-task">测试项目</th>
-                  <th>题数</th>
-                  <th>重复次数</th>
-                  <th>并发请求</th>
+                  <th class="c-task">{{ t('测试项目', 'Benchmark') }}</th>
+                  <th>{{ t('题数', 'Items') }}</th>
+                  <th>{{ t('重复次数', 'Repeats') }}</th>
+                  <th>{{ t('并发请求', 'Concurrency') }}</th>
                   <th>max_tokens</th>
-                  <th class="c-note">备注</th>
+                  <th class="c-note">{{ t('备注', 'Note') }}</th>
                   <th class="c-x"></th>
                 </tr>
               </thead>
@@ -521,12 +538,12 @@ async function saveProfile() {
                   <td class="c-task">
                     <div class="dd">
                       <button class="dd-toggle input" type="button" @click.stop="openDd = openDd === i ? -1 : i">
-                        {{ taskById(r.task)?.name || '选择测试项目…' }}
+                        {{ taskName(taskById(r.task)) || t('选择测试项目…', 'Pick a benchmark…') }}
                       </button>
                       <ul v-if="openDd === i" class="dd-menu">
-                        <li v-for="t in tasks" :key="t.id" @click.stop="pickTask(i, t.id)">
-                          <strong>{{ t.name }}</strong>
-                          <small>{{ t.ability }}{{ judgeKinds.includes(t.kind) ? ' · 需要沙箱' : '' }}</small>
+                        <li v-for="task in tasks" :key="task.id" @click.stop="pickTask(i, task.id)">
+                          <strong>{{ taskName(task) }}</strong>
+                          <small>{{ taskAbility(task) }}{{ judgeKinds.includes(task.kind) ? t(' · 需要沙箱', ' · sandbox') : '' }}</small>
                         </li>
                       </ul>
                     </div>
@@ -536,7 +553,7 @@ async function saveProfile() {
                   <td><input v-model="r.concurrency" class="input num" type="number" min="1" placeholder="1" /></td>
                   <td><input v-model="r.maxTokens" class="input num" type="number" min="256" :placeholder="taskById(r.task)?.defaultMaxTokens || 4096" /></td>
                   <td class="c-note soft">
-                    <template v-if="taskById(r.task)">{{ taskById(r.task).ability }} · {{ judgeKinds.includes(taskById(r.task).kind) ? '需要判题沙箱' : '无需沙箱' }}</template>
+                    <template v-if="taskById(r.task)">{{ taskAbility(taskById(r.task)) }} · {{ judgeKinds.includes(taskById(r.task).kind) ? t('需要判题沙箱', 'sandbox required') : t('无需沙箱', 'no sandbox') }}</template>
                   </td>
                   <td class="c-x">
                     <button
@@ -550,22 +567,22 @@ async function saveProfile() {
           </fieldset>
 
           <div class="actions">
-            <button class="btn primary" @click="submitRun">开始评测</button>
-            <span class="soft">temperature=0 · 抑制思维链 · 留空的参数使用每项默认值</span>
+            <button class="btn primary" @click="submitRun">{{ t('开始评测', 'Start run') }}</button>
+            <span class="soft">{{ t('temperature=0 · 默认抑制思维链 · 留空的参数使用每项默认值', 'temperature=0 · thinking off by default · blank fields use per-task defaults') }}</span>
           </div>
         </template>
 
         <!-- 运行队列：只显示正在运行的，日志常开、自动滚底 -->
         <template v-else-if="active === 'queue'">
-          <p v-if="!runningRuns.length" class="soft">当前没有正在运行的评测。</p>
+          <p v-if="!runningRuns.length" class="soft">{{ t('当前没有正在运行的评测。', 'No runs are currently executing.') }}</p>
           <article v-for="r in runningRuns" :key="r.id" class="run-card">
             <header>
               <strong>{{ r.name }}</strong>
               <span class="badge running">{{ statusText(r.status) }}</span>
-              <button class="btn ghost danger" @click="cancelRun(r.id)">中断</button>
+              <button class="btn ghost danger" @click="cancelRun(r.id)">{{ t('中断', 'Stop') }}</button>
             </header>
             <p class="soft">
-              {{ (r.models || []).join('、') }} · {{ (r.tasks || []).length }} 项测试 · 进度 {{ (r.progress?.modelIndex || 0) + 1 }}/{{ r.models.length }}
+              {{ (r.models || []).join('、') }} · {{ (r.tasks || []).length }} {{ t('项测试', 'benchmarks') }} · {{ t('进度', 'progress') }} {{ (r.progress?.modelIndex || 0) + 1 }}/{{ r.models.length }}
               <template v-if="r.current"> — {{ r.current }}</template>
             </p>
             <div v-if="r.rows?.length" class="mini-table">
@@ -580,21 +597,21 @@ async function saveProfile() {
 
         <!-- 历史记录 -->
         <template v-else-if="active === 'history'">
-          <p v-if="!finishedRuns.length" class="soft">暂无完成的结果。</p>
+          <p v-if="!finishedRuns.length" class="soft">{{ t('暂无完成的结果。', 'No finished runs yet.') }}</p>
           <article v-for="r in finishedRuns" :key="r.id" class="run-card" :data-run-id="r.id">
             <header>
               <strong>{{ r.name }}</strong>
               <span class="badge" :class="r.status">{{ statusText(r.status) }}</span>
               <span class="soft">{{ new Date(r.startedAt).toLocaleString() }}</span>
               <span class="head-actions">
-                <button class="btn act-btn" :class="{ danger: true }" @click="askDelete(r)">删除</button>
+                <button class="btn act-btn" :class="{ danger: true }" @click="askDelete(r)">{{ t('删除', 'Delete') }}</button>
                 <button class="btn act-btn primary-ghost" :class="{ on: comparePicks.includes(r.id) }" @click="toggleCompare(r.id)">
-                  {{ comparePicks.includes(r.id) ? '已选入' : '选入对比' }}
+                  {{ comparePicks.includes(r.id) ? t('已选入', 'Picked') : t('选入对比', 'Compare') }}
                 </button>
               </span>
             </header>
             <table class="table">
-              <thead><tr><th>模型</th><th>测试</th><th>得分</th><th>明细</th><th>重复</th></tr></thead>
+              <thead><tr><th>{{ t('模型', 'Model') }}</th><th>{{ t('测试', 'Benchmark') }}</th><th>{{ t('得分', 'Score') }}</th><th>{{ t('明细', 'Detail') }}</th><th>{{ t('重复', 'Repeats') }}</th></tr></thead>
               <tbody>
                 <tr v-for="(row, i) in r.rows" :key="i">
                   <td>{{ row.model }}</td>
@@ -606,7 +623,7 @@ async function saveProfile() {
               </tbody>
             </table>
             <details>
-              <summary>逐题日志（{{ (r.log || []).length }} 行）</summary>
+              <summary>{{ t('逐题日志', 'Per-item logs') }}（{{ (r.log || []).length }}{{ t(' 行）', ' lines)') }}</summary>
               <pre class="log">{{ (r.log || []).join('\n') }}</pre>
             </details>
           </article>
@@ -614,12 +631,12 @@ async function saveProfile() {
 
         <!-- 对比分析：行=测试项目，列=结果名称×模型，下方维度雷达图 -->
         <template v-else-if="active === 'compare'">
-          <p v-if="!comparePicks.length" class="soft">在"历史记录"中把若干次运行"选入对比"，这里会按测试项目逐行对比每个模型的表现。</p>
+          <p v-if="!comparePicks.length" class="soft">{{ t('在"历史记录"中把若干次运行"选入对比"，这里会按测试项目逐行对比每个模型的表现。', 'Pick runs with "Compare" in History to compare them row by row per benchmark.') }}</p>
           <template v-else>
             <table class="table compare">
               <thead>
                 <tr>
-                  <th class="c-run">测试项目</th>
+                  <th class="c-run">{{ t('测试项目', 'Benchmark') }}</th>
                   <th v-for="col in compareCols" :key="col.runId + col.model">
                     <span class="col-task">{{ col.runName }}</span>
                     <span class="col-model soft">{{ col.model }}</span>
@@ -641,7 +658,7 @@ async function saveProfile() {
             </table>
 
             <div class="panel radar-panel">
-              <h3>维度雷达图</h3>
+              <h3>{{ t('维度雷达图', 'Dimension radar') }}</h3>
               <div class="radar-legend">
                 <button
                   v-for="opt in radarOptions" :key="opt.key" type="button"
@@ -670,9 +687,9 @@ async function saveProfile() {
                     <circle v-for="(p, i) in radarDots(s.key)" :key="i" :cx="p.x" :cy="p.y" r="3" :fill="radarColor(s.key)" />
                   </g>
                 </svg>
-                <p class="soft radar-note">外圈 = 100% · 勾选图例绘制曲线 · 未覆盖项目按 0 绘制 · 速度轴按选中最高 t/s 的 80% 定标</p>
+                <p class="soft radar-note">{{ t('外圈 = 100% · 勾选图例绘制曲线 · 未覆盖项目按 0 绘制 · 速度轴按选中最高 t/s 的 80% 定标', 'Outer ring = 100% · tick a legend chip to draw · uncovered items plot as 0 · speed axis scales to 80% of the highest selected t/s') }}</p>
               </div>
-              <p v-else class="soft">本次对比覆盖的项目不足 3 项，雷达图至少需要 3 个维度。</p>
+              <p v-else class="soft">{{ t('本次对比覆盖的项目不足 3 项，雷达图至少需要 3 个维度。', 'Fewer than 3 benchmarks covered - the radar needs at least 3 axes.') }}</p>
             </div>
           </template>
         </template>
@@ -680,50 +697,50 @@ async function saveProfile() {
         <!-- 协议与基线 -->
         <template v-else-if="active === 'protocols'">
           <div class="panel">
-            <p>统一采样口径：temperature=0、单次生成（pass@1）；除 LiveCodeBench 按官方口径开启思考外，其余协议默认抑制思维链（enable_thinking=false）。代码与指令类判分只看思考后的正文。选择题只认明确的最终答案（最终答案：X / \boxed{X} / 末行选项字母），推理无结论计"未知"并保留在分母中，避免把截断的推理误判为错误。</p>
+            <p>{{ t('统一采样口径：temperature=0、单次生成（pass@1）；除 LiveCodeBench 按官方口径开启思考外，其余协议默认抑制思维链（enable_thinking=false）。代码与指令类判分只看思考后的正文。选择题只认明确的最终答案（最终答案：X / \boxed{X} / 末行选项字母），推理无结论计"未知"并保留在分母中，避免把截断的推理误判为错误。', 'Common sampling: temperature=0, single generation (pass@1). Thinking is disabled by default (enable_thinking=false) except LiveCodeBench, which follows the official setup with thinking on; code and instruction scoring reads only the post-thinking content. MCQ scoring accepts an explicit final answer only; reasoning without a conclusion counts as unknown and stays in the denominator, so truncated reasoning is not graded wrong.') }}</p>
           </div>
           <table class="table">
             <thead><tr><th>协议</th><th>能力</th><th>判分方式</th><th>默认题数 / 全量</th></tr></thead>
             <tbody>
-              <tr v-for="t in tasks" :key="t.id">
-                <td>{{ t.name }}</td>
-                <td>{{ t.ability }}</td>
+              <tr v-for="task in tasks" :key="task.id">
+                <td>{{ taskName(task) }}</td>
+                <td>{{ taskAbility(task) }}</td>
                 <td class="soft">{{ ({
-                  smoke: '预热后流式请求：首 token 延迟 + 生成速度（不含首 token）',
-                  gpqa: '选项字母精确匹配',
-                  aime: '整数答案精确匹配',
-                  mmlu: '选项字母精确匹配',
-                  longbench2: 'A/B/C/D 字母精确匹配',
-                  humanevalplus: '全部增强测试通过（沙箱执行）',
-                  mbppplus: '全部增强测试通过（沙箱执行）',
-                  livecodebench: '隐藏测试全通过（stdin/函数式沙箱）',
-                  ds1000: '官方扰动测试通过（沙箱执行）',
-                  ifeval: '官方校验器：全部约束满足（strict，沙箱执行）',
-                  ifbench: '官方校验器：域外约束全满足（strict，沙箱执行）',
-                  xstest: '安全提示应答视为通过，命中拒绝模式视为误拒',
-                } as Record<string, string>)[t.kind] }}</td>
-                <td>{{ t.defaultLimit || '—' }}<template v-if="t.ability.includes('全量')"> / {{ t.ability.split('｜全量 ')[1] }}</template></td>
+                  smoke: t('预热后流式请求：首 token 延迟 + 生成速度（不含首 token）', 'Streaming probe after warmup: TTFT + decode speed (excl. first token)'),
+                  gpqa: t('选项字母精确匹配', 'Exact choice-letter match'),
+                  aime: t('整数答案精确匹配', 'Exact integer match'),
+                  mmlu: t('选项字母精确匹配', 'Exact choice-letter match'),
+                  longbench2: t('A/B/C/D 字母精确匹配', 'Exact A/B/C/D letter match'),
+                  humanevalplus: t('全部增强测试通过（沙箱执行）', 'All augmented tests pass (sandboxed)'),
+                  mbppplus: t('全部增强测试通过（沙箱执行）', 'All augmented tests pass (sandboxed)'),
+                  livecodebench: t('隐藏测试全通过（stdin/函数式沙箱）', 'All hidden tests pass (stdin/functional sandbox)'),
+                  ds1000: t('官方扰动测试通过（沙箱执行）', 'Official perturbation tests pass (sandboxed)'),
+                  ifeval: t('官方校验器：全部约束满足（strict，沙箱执行）', 'Official verifier: all constraints met (strict, sandboxed)'),
+                  ifbench: t('官方校验器：域外约束全满足（strict，沙箱执行）', 'Official verifier: all OOD constraints met (strict, sandboxed)'),
+                  xstest: t('安全提示应答视为通过，命中拒绝模式视为误拒', 'Answering a safe prompt passes; refusal patterns count as over-refusal'),
+                } as Record<string, string>)[task.kind] }}</td>
+                <td>{{ task.defaultLimit || '—' }}<template v-if="task.ability.includes('全量')"> / {{ task.ability.split('｜全量 ')[1] }}</template></td>
               </tr>
             </tbody>
           </table>
           <div class="panel">
-            <p class="soft">代码与指令类题目在 WSL2 Docker 沙箱内判分（无外网、CPU/内存/文件系统受限、单测超时 6-60s）；IFEval/IFBench 判分使用 vendor 的官方校验器（judge/verifiers/）。默认题数是快速抽样口径，把"题数"填成全量即为深度评测。数据集重新生成：node scripts/prepare_*.js（原始数据见 benchmarks/raw，大文件可用 docker/download-benchmarks.sh 重新下载）。</p>
+            <p class="soft">{{ t('代码与指令类题目在 WSL2 Docker 沙箱内判分（无外网、CPU/内存/文件系统受限、单测超时 6-60s）；IFEval/IFBench 判分使用 vendor 的官方校验器（judge/verifiers/）。默认题数是快速抽样口径，把"题数"填成全量即为深度评测。数据集重新生成：node scripts/prepare_*.js（原始数据见 benchmarks/raw，大文件可用 docker/download-benchmarks.sh 重新下载）。', 'Code and instruction benchmarks are judged inside a WSL2 Docker sandbox (no egress, CPU/memory/filesystem limits, 6-60s per-test timeouts); IFEval/IFBench use the vendored official verifiers (judge/verifiers/). Default item counts are quick samples - fill "Items" with the full pool for a deep run. Regenerate datasets with node scripts/prepare_*.js (raw sources under benchmarks/raw; re-download large ones via docker/download-benchmarks.sh).') }}</p>
           </div>
         </template>
 
         <!-- 环境设置 -->
         <template v-else-if="active === 'settings'">
           <div class="panel">
-            <div class="row"><label>API 端点</label><input v-model="profile.endpoint" class="input" type="text" /></div>
-            <div class="row"><label>API Key</label><input v-model="profile.key" class="input" type="password" placeholder="本地服务通常留空" /></div>
-            <div class="row"><label></label><label class="inline"><input v-model="profile.rememberKey" type="checkbox" /> 保存 Key（服务端配置）</label></div>
+            <div class="row"><label>{{ t('API 端点', 'API endpoint') }}</label><input v-model="profile.endpoint" class="input" type="text" /></div>
+            <div class="row"><label>API Key</label><input v-model="profile.key" class="input" type="password" :placeholder="t('本地服务通常留空', 'usually empty for local services')" /></div>
+            <div class="row"><label></label><label class="inline"><input v-model="profile.rememberKey" type="checkbox" /> {{ t('保存 Key（服务端配置）', 'Remember key (server-side config)') }}</label></div>
             <div class="actions">
-              <button class="btn primary" @click="saveProfile">保存并应用</button>
-              <button class="btn" :disabled="loadingModels" @click="fetchModels">{{ loadingModels ? '获取中…' : '重新获取模型' }}</button>
+              <button class="btn primary" @click="saveProfile">{{ t('保存并应用', 'Save & apply') }}</button>
+              <button class="btn" :disabled="loadingModels" @click="fetchModels">{{ loadingModels ? t('获取中…', 'Fetching…') : t('重新获取模型', 'Refetch models') }}</button>
             </div>
           </div>
           <div class="panel">
-            <h3>环境自检</h3>
+            <h3>{{ t('环境自检', 'Environment self-check') }}</h3>
             <pre class="log">{{ JSON.stringify(preflight, null, 2) }}</pre>
           </div>
         </template>
@@ -734,12 +751,12 @@ async function saveProfile() {
     <!-- 完成通知（右上角，自动消失，红叉手动关闭） -->
     <div class="toast-stack" aria-live="polite">
       <TransitionGroup name="toast">
-        <div v-for="t in toasts" :key="t.id" class="toast" role="status" @click="toastClick(t.id)">
+        <div v-for="toast in toasts" :key="toast.id" class="toast" role="status" @click="toastClick(toast.id)">
           <div class="toast-body">
-            <strong>{{ t.text }}</strong>
-            <small>{{ t.sub }}</small>
+            <strong>{{ toast.text }}</strong>
+            <small>{{ toast.sub }}</small>
           </div>
-          <button class="toast-x" type="button" aria-label="关闭通知" @click.stop="dismissToast(t.id)">×</button>
+          <button class="toast-x" type="button" :aria-label="t('关闭通知', 'Dismiss notification')" @click.stop="dismissToast(toast.id)">×</button>
         </div>
       </TransitionGroup>
     </div>
@@ -747,13 +764,13 @@ async function saveProfile() {
     <!-- 删除确认弹窗 -->
     <Transition name="fade">
       <div v-if="pendingDelete" class="modal-backdrop" @click.self="pendingDelete = null">
-        <div class="modal" role="alertdialog" aria-modal="true" aria-label="确认删除">
-          <h3>删除这条测试结果？</h3>
+        <div class="modal" role="alertdialog" aria-modal="true" :aria-label="t('确认删除', 'Confirm deletion')">
+          <h3>{{ t('删除这条测试结果？', 'Delete this run?') }}</h3>
           <p class="modal-name">「{{ pendingDelete.name }}」</p>
-          <p class="soft">删除后不可恢复。按 Enter 确认，Esc 取消。</p>
+          <p class="soft">{{ t('删除后不可恢复。按 Enter 确认，Esc 取消。', 'This cannot be undone. Enter confirms, Esc cancels.') }}</p>
           <div class="modal-actions">
-            <button class="btn" type="button" @click="pendingDelete = null">取消</button>
-            <button ref="confirmBtn" class="btn primary danger-solid" type="button" @click="confirmDelete">删除</button>
+            <button class="btn" type="button" @click="pendingDelete = null">{{ t('取消', 'Cancel') }}</button>
+            <button ref="confirmBtn" class="btn primary danger-solid" type="button" @click="confirmDelete">{{ t('删除', 'Delete') }}</button>
           </div>
         </div>
       </div>
@@ -788,6 +805,7 @@ async function saveProfile() {
   background: var(--color-teal-strong); font-family: var(--font-display); font-size: 20px;
 }
 .brand-text { display: flex; flex-direction: column; line-height: 1.25; }
+.brand-text strong { font-family: var(--font-display); font-size: 16px; letter-spacing: .02em; }
 .brand-text small { color: var(--color-teal-on-soft); }
 
 .nav { display: flex; flex-direction: column; gap: 2px; }
@@ -800,6 +818,11 @@ async function saveProfile() {
 .nav-item.active { background: var(--color-teal-active); font-weight: 700; }
 
 .sidenav-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding: 0 6px; }
+.sidenav-foot .lang-toggle {
+  text-align: center; width: 100%; padding: 8px 12px; font-weight: 700; letter-spacing: .08em;
+  border: 1px solid var(--color-teal-line); color: var(--color-teal-on);
+}
+.sidenav-foot .lang-toggle:hover { background: var(--color-teal-hover); }
 .sidenav-foot a { color: var(--color-teal-on-soft); font-size: 12px; }
 .dot-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-teal-on-soft); }
 
@@ -818,8 +841,8 @@ async function saveProfile() {
 }
 .panel { margin-bottom: 14px; }
 fieldset.panel { border: 1px solid var(--color-line); }
-fieldset.panel legend { padding: 0 8px; color: var(--color-ink-soft); font-size: 13px; }
-.card h3, .panel h3 { margin: 0 0 8px; font-size: 14px; color: var(--color-ink-soft); font-weight: 700; }
+fieldset.panel legend { padding: 0 8px; color: var(--color-ink-soft); font-family: var(--font-display); font-size: 13px; }
+.card h3, .panel h3 { margin: 0 0 8px; font-family: var(--font-display); font-size: 15px; color: var(--color-ink-soft); font-weight: 700; }
 .card p { margin: 4px 0; }
 .big-num { font-family: var(--font-display); font-size: 30px; margin: 2px 0 !important; }
 .mono { font-family: var(--font-mono); font-size: 12px; }
@@ -897,6 +920,7 @@ select.input { appearance: auto; }
 
 .run-card { margin-bottom: 16px; }
 .run-card header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.run-card header strong { font-family: var(--font-display); font-size: 15px; }
 .badge { border-radius: 999px; padding: 2px 10px; font-size: 12px; background: var(--color-teal-soft); color: var(--color-teal); }
 .badge.running { background: var(--color-coral-soft); color: var(--color-coral-strong); }
 .badge.done { background: var(--color-success-soft); color: var(--color-success); }
@@ -951,6 +975,7 @@ summary { cursor: pointer; color: var(--color-ink-soft); font-size: 13px; }
   box-shadow: var(--shadow-card); padding: 22px 24px;
 }
 .modal h3 { margin: 0 0 6px; font-family: var(--font-display); font-size: 17px; }
+.modal-name { font-family: var(--font-display); }
 .modal-name { margin: 4px 0; font-weight: 700; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 .danger-solid { background: var(--color-danger) !important; border-color: var(--color-danger) !important; color: #fff !important; }

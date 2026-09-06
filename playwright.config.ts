@@ -7,6 +7,7 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:3000',
     headless: true,
     channel: 'chromium',
+    locale: 'zh-CN', // UI 跟随浏览器语言，测试固定中文断言
   },
   webServer: {
     command: 'node server.js',

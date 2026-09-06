@@ -63,19 +63,19 @@ function saveState() {
 
 // defaultLimit: sampled questions when the caller does not pass a limit
 const tasks = [
-  { id: 'smoke_speed', name: '连通性与吐字速度', ability: '实际可用性 / 首 token 与生成速度', kind: 'smoke', defaultMaxTokens: 2048 },
-  { id: 'gpqa_cached', name: 'GPQA Diamond（科学推理）', ability: '高难度科学推理与知识整合｜全量 198 题', kind: 'gpqa', file: 'gpqa_diamond_mc.jsonl', defaultLimit: 198, defaultMaxTokens: 8192 },
-  { id: 'aime_cached', name: 'AIME 2025（数学推理）', ability: '数学竞赛推理与精确计算｜全量 30 题', kind: 'aime', file: 'aime_2025.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
-  { id: 'mmlu_pro_cached', name: 'MMLU-Pro（综合知识）', ability: '广泛知识、学科理解与选择题稳健性｜全量 12032 题', kind: 'mmlu', file: 'MMLU-Pro.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
-  { id: 'longbench2', name: 'LongBench v2（长上下文）', ability: '超长上下文检索、长文推理与指令跟随｜全量 503 题', kind: 'longbench2', file: 'longbench2.jsonl', defaultLimit: 30, defaultMaxTokens: 2048 },
-  { id: 'humanevalplus', name: 'HumanEval+（代码生成）', ability: '函数级 Python 代码生成的正确性（增强测试集）｜全量 164 题', kind: 'humanevalplus', file: 'humanevalplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
-  { id: 'mbppplus', name: 'MBPP+（代码生成）', ability: '基础编程任务代码生成的正确性（增强测试集）｜全量 378 题', kind: 'mbppplus', file: 'mbppplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
-  { id: 'livecodebench', name: 'LiveCodeBench（竞赛编程）', ability: '竞赛级算法编程（stdin / 函数式，隐藏测试）｜官方口径：开启思考｜全量 342 题', kind: 'livecodebench', file: 'livecodebench.jsonl', defaultLimit: 30, defaultMaxTokens: 16384 },
-  { id: 'ds1000', name: 'DS-1000（数据科学编程）', ability: 'NumPy/Pandas/SciPy/Sklearn/Matplotlib 真实数据科学任务｜全量 1000 题', kind: 'ds1000', file: 'ds1000.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
-  { id: 'ifeval', name: 'IFEval（指令遵循）', ability: '可验证指令约束的精确遵循（格式/字数/关键词等）｜全量 541 题', kind: 'ifeval', file: 'ifeval.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
-  { id: 'ifbench', name: 'IFBench（指令泛化）', ability: '域外可验证指令的泛化遵循（AllenAI 2025）｜全量 300 题', kind: 'ifbench', file: 'ifbench.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
-  { id: 'safetybench_cn', name: 'SafetyBench（中文安全）', ability: '安全风险场景选择题（违法/隐私/歧视/身心健康等）｜全量 11435 题', kind: 'mmlu', file: 'safetybench_cn.jsonl', defaultLimit: 100, defaultMaxTokens: 2048 },
-  { id: 'xstest', name: 'XSTest（过度拒绝）', ability: '安全提示误拒校准（看起来危险、实际安全）｜全量 250 题', kind: 'xstest', file: 'xstest.jsonl', defaultLimit: 250, defaultMaxTokens: 1024 },
+  { id: 'smoke_speed', name: '连通性与吐字速度', name_en: 'Connectivity & Decode Speed', ability: '实际可用性 / 首 token 与生成速度', ability_en: 'Real-world usability / TTFT & decode speed', kind: 'smoke', defaultMaxTokens: 2048 },
+  { id: 'gpqa_cached', name: 'GPQA Diamond（科学推理）', name_en: 'GPQA Diamond (Science)', ability: '高难度科学推理与知识整合｜全量 198 题', ability_en: 'Graduate-level science reasoning | 198 items', kind: 'gpqa', file: 'gpqa_diamond_mc.jsonl', defaultLimit: 198, defaultMaxTokens: 8192 },
+  { id: 'aime_cached', name: 'AIME 2025（数学推理）', name_en: 'AIME 2025 (Math)', ability: '数学竞赛推理与精确计算｜全量 30 题', ability_en: 'Competition math reasoning | 30 items', kind: 'aime', file: 'aime_2025.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
+  { id: 'mmlu_pro_cached', name: 'MMLU-Pro（综合知识）', name_en: 'MMLU-Pro (Knowledge)', ability: '广泛知识、学科理解与选择题稳健性｜全量 12032 题', ability_en: 'Broad knowledge & MCQ robustness | 12032 items', kind: 'mmlu', file: 'MMLU-Pro.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'longbench2', name: 'LongBench v2（长上下文）', name_en: 'LongBench v2 (Long Context)', ability: '超长上下文检索、长文推理与指令跟随｜全量 503 题', ability_en: 'Long-context retrieval & reasoning | 503 items', kind: 'longbench2', file: 'longbench2.jsonl', defaultLimit: 30, defaultMaxTokens: 2048 },
+  { id: 'humanevalplus', name: 'HumanEval+（代码生成）', name_en: 'HumanEval+ (Code)', ability: '函数级 Python 代码生成的正确性（增强测试集）｜全量 164 题', ability_en: 'Function-level Python correctness (augmented) | 164 items', kind: 'humanevalplus', file: 'humanevalplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
+  { id: 'mbppplus', name: 'MBPP+（代码生成）', name_en: 'MBPP+ (Code)', ability: '基础编程任务代码生成的正确性（增强测试集）｜全量 378 题', ability_en: 'Basic Python programming correctness (augmented) | 378 items', kind: 'mbppplus', file: 'mbppplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
+  { id: 'livecodebench', name: 'LiveCodeBench（竞赛编程）', name_en: 'LiveCodeBench (Competitive)', ability: '竞赛级算法编程（stdin / 函数式，隐藏测试）｜官方口径：开启思考｜全量 342 题', ability_en: 'Competitive programming, hidden tests | official: thinking on | 342 items', kind: 'livecodebench', file: 'livecodebench.jsonl', defaultLimit: 30, defaultMaxTokens: 16384 },
+  { id: 'ds1000', name: 'DS-1000（数据科学编程）', name_en: 'DS-1000 (Data Science)', ability: 'NumPy/Pandas/SciPy/Sklearn/Matplotlib 真实数据科学任务｜全量 1000 题', ability_en: 'Real data-science tasks across the SciPy stack | 1000 items', kind: 'ds1000', file: 'ds1000.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
+  { id: 'ifeval', name: 'IFEval（指令遵循）', name_en: 'IFEval (Instruction Following)', ability: '可验证指令约束的精确遵循（格式/字数/关键词等）｜全量 541 题', ability_en: 'Verifiable instruction constraints | 541 items', kind: 'ifeval', file: 'ifeval.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'ifbench', name: 'IFBench（指令泛化）', name_en: 'IFBench (IF Generalization)', ability: '域外可验证指令的泛化遵循（AllenAI 2025）｜全量 300 题', ability_en: 'Out-of-domain instruction constraints (AllenAI 2025) | 300 items', kind: 'ifbench', file: 'ifbench.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'safetybench_cn', name: 'SafetyBench（中文安全）', name_en: 'SafetyBench (Safety, zh)', ability: '安全风险场景选择题（违法/隐私/歧视/身心健康等）｜全量 11435 题', ability_en: 'Safety risk MCQ (fraud/privacy/discrimination etc.) | 11435 items', kind: 'mmlu', file: 'safetybench_cn.jsonl', defaultLimit: 100, defaultMaxTokens: 2048 },
+  { id: 'xstest', name: 'XSTest（过度拒绝）', name_en: 'XSTest (Over-refusal)', ability: '安全提示误拒校准（看起来危险、实际安全）｜全量 250 题', ability_en: 'Exaggerated-safety calibration (safe but scary prompts) | 250 items', kind: 'xstest', file: 'xstest.jsonl', defaultLimit: 250, defaultMaxTokens: 1024 },
 ];
 const CODE_KINDS = new Set(['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000', 'ifeval', 'ifbench']);
 

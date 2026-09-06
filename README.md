@@ -1,5 +1,7 @@
 # 模型测评台 (llm-test)
 
+**简体中文** | [English](README.en.md)
+
 Windows 本地运行的 Vue 3 + Node 评测工作台，默认连接 llama-swap 的 OpenAI Compatible 接口（`http://127.0.0.1:9292/v1`），代码类基准在 WSL2 Docker 判题沙箱内执行。
 
 ## 启动
