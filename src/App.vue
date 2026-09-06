@@ -219,7 +219,7 @@ async function submitRun() {
     await api('/api/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: form.name, note: form.note, models: selectedModels.value, tasks: taskPayload }),
+      body: JSON.stringify({ name: form.value.name, note: form.value.note, models: selectedModels.value, tasks: taskPayload }),
     });
     flash('ok', t('评测已加入运行队列', 'Run queued'));
     select('queue');
@@ -548,7 +548,7 @@ async function saveProfile() {
                       </ul>
                     </div>
                   </td>
-                  <td><input v-model="r.limit" class="input num" type="number" min="1" :placeholder="taskById(r.task)?.defaultLimit || '全部'" /></td>
+                  <td><input v-model="r.limit" class="input num" type="number" min="1" :placeholder="taskById(r.task)?.defaultLimit || t('全部', 'All')" /></td>
                   <td><input v-model="r.repeats" class="input num" type="number" min="1" placeholder="1" /></td>
                   <td><input v-model="r.concurrency" class="input num" type="number" min="1" placeholder="1" /></td>
                   <td><input v-model="r.maxTokens" class="input num" type="number" min="256" :placeholder="taskById(r.task)?.defaultMaxTokens || 4096" /></td>
@@ -700,7 +700,7 @@ async function saveProfile() {
             <p>{{ t('统一采样口径：temperature=0、单次生成（pass@1）。与官方榜单重叠的协议按官方口径开启思考（AIME 2025 / GPQA Diamond / LiveCodeBench / IFBench，思考档位 xhigh；AIME 输出预算 38912，其余 32768），其余协议默认抑制思维链（enable_thinking=false）。代码与指令类判分只看思考后的正文。选择题只认明确的最终答案（最终答案：X / \boxed{X} / 末行选项字母），推理无结论计"未知"并保留在分母中，避免把截断的推理误判为错误。', 'Common sampling: temperature=0, single generation (pass@1). Protocols overlapping the official leaderboard run with thinking on per the official setup (AIME 2025 / GPQA Diamond / LiveCodeBench / IFBench, effort xhigh; output budget 38,912 for AIME, 32,768 for the rest); all other protocols keep thinking disabled by default (enable_thinking=false). Code and instruction scoring reads only the post-thinking content. MCQ scoring accepts an explicit final answer only; reasoning without a conclusion counts as unknown and stays in the denominator, so truncated reasoning is not graded wrong.') }}</p>
           </div>
           <table class="table">
-            <thead><tr><th>协议</th><th>能力</th><th>判分方式</th><th>默认题数 / 全量</th></tr></thead>
+            <thead><tr><th>{{ t('协议', 'Protocol') }}</th><th>{{ t('能力', 'Ability') }}</th><th>{{ t('判分方式', 'Scoring') }}</th><th>{{ t('默认题数 / 全量', 'Default items / pool') }}</th></tr></thead>
             <tbody>
               <tr v-for="task in tasks" :key="task.id">
                 <td>{{ taskName(task) }}</td>
@@ -812,7 +812,7 @@ async function saveProfile() {
 .nav-item {
   text-align: left; padding: 9px 12px; border: 0; border-radius: var(--radius-sm);
   background: transparent; color: var(--color-teal-on); cursor: pointer;
-  font: inherit; transition: background var(--motion-fast);
+  font: inherit; font-family: var(--font-display); transition: background var(--motion-fast);
 }
 .nav-item:hover { background: var(--color-teal-hover); }
 .nav-item.active { background: var(--color-teal-active); font-weight: 700; }
