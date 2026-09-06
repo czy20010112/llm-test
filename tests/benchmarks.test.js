@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { existsSync } = require('node:fs');
+const { join } = require('node:path');
 const {
   extractCode, buildLongBenchPrompt, buildDs1000Script, buildLcbFunctionalScript,
   judgeVerdict, judgeReason, readJsonl, decodeSpeed,
@@ -100,7 +102,11 @@ test('judgeReason classifies the common judge failures', () => {
   assert.equal(judgeReason('', 'humanevalplus'), '测试未通过');
 });
 
-test('readJsonl samples the first N lines and reports the pool size', () => {
+test('readJsonl samples the first N lines and reports the pool size', (t) => {
+  // 题库由 scripts/prepare_benchmarks.js 生成且已 gitignore：干净克隆上跳过，不视为失败
+  if (!existsSync(join(__dirname, '..', 'scripts', 'data', 'humanevalplus.jsonl'))) {
+    return t.skip('题库未生成（先运行 scripts/prepare_benchmarks.js）');
+  }
   const { rows, total } = readJsonl('humanevalplus.jsonl', 3);
   assert.equal(rows.length, 3);
   assert.ok(total >= rows.length);
