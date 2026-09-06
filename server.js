@@ -264,6 +264,7 @@ async function execute(run, b) {
 function logLine(run, line) {
   run.log.push(line);
   if (run.currentEntryLog) run.currentEntryLog.push(line);
+  console.log(line); // 控制台启动方式下实时可见（判题中、报错等）
 }
 
 // One-line per-problem verdict for code tasks: classified reason + model output snippet,

@@ -134,7 +134,10 @@ function openRunLog(id: string) {
   }, 380); // 等待视图过渡完成
 }
 
+let lastPreflightAt = 0;
 async function refreshRuns() {
+  // 左下角判题状态依赖 preflight，随轮询低频刷新（每 10s）
+  if (Date.now() - lastPreflightAt > 10000) { lastPreflightAt = Date.now(); refreshPreflight(); }
   try {
     const fresh = await api('/api/runs');
     runs.value = fresh;
@@ -338,6 +341,27 @@ const TASK_ALIAS: Record<string, string> = {
 };
 const normTask = (n: string) => TASK_ALIAS[n] || n;
 
+// 历史/对比行的任务名是运行时固化的中文快照，英文态按注册表 name_en 映射显示
+const taskEnByName = computed(() => {
+  const m: Record<string, string> = {};
+  for (const t of tasks.value) if (t?.name && t.name_en) m[t.name] = t.name_en;
+  return m;
+});
+function rowTaskName(name: string) {
+  if (lang.value !== 'en') return name;
+  return taskEnByName.value[normTask(name)] || name;
+}
+
+// 左下角判题服务状态：离线 / 判题中（运行中的评测含沙箱类任务）/ 健康
+const judgeBusy = computed(() => runningRuns.value.some((r) => (r.tasks || []).some((id: string) => {
+  const t = taskById(id);
+  return !!t && judgeKinds.includes(t.kind);
+})));
+const judgeStatusText = computed(() => {
+  if (!preflight.value?.judge?.ok) return t('判题服务离线', 'Judge service offline');
+  return judgeBusy.value ? t('判题中', 'Judging') : t('判题服务健康', 'Judge service healthy');
+});
+
 // ---------- 对比分析：维度雷达图（轴=本次覆盖的项目，系列=运行×模型，默认不绘制） ----------
 const RADAR_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16'];
 const radarPicks = ref<string[]>([]);
@@ -442,9 +466,9 @@ async function saveProfile() {
         <button class="nav-item lang-toggle" type="button" @click="toggleLang" :title="t('切换语言', 'Switch language')">
           {{ lang === 'zh' ? 'EN' : '中文' }}
         </button>
-        <span class="dot-row">
-          <span class="dot" :class="preflight?.judge?.ok ? 'ok' : 'bad'" :title="preflight?.judge?.ok ? t('判题沙箱在线', 'Judge sandbox online') : t('判题沙箱离线', 'Judge sandbox offline')"></span>
-          judge
+        <span class="dot-row" :title="judgeStatusText">
+          <span class="dot" :class="!preflight?.judge?.ok ? 'bad' : judgeBusy ? 'busy' : 'ok'"></span>
+          {{ judgeStatusText }}
         </span>
       </div>
     </aside>
@@ -587,7 +611,7 @@ async function saveProfile() {
             </p>
             <div v-if="r.rows?.length" class="mini-table">
               <div v-for="(row, i) in r.rows" :key="i" class="mini-row">
-                <span>{{ row.model }}</span><span>{{ row.task }}</span><strong>{{ scoreOf(row) }}</strong>
+                <span>{{ row.model }}</span><span>{{ rowTaskName(row.task) }}</span><strong>{{ scoreOf(row) }}</strong>
                 <small class="soft">{{ scoreDetail(row) }}</small>
               </div>
             </div>
@@ -615,7 +639,7 @@ async function saveProfile() {
               <tbody>
                 <tr v-for="(row, i) in r.rows" :key="i">
                   <td>{{ row.model }}</td>
-                  <td>{{ row.task }}</td>
+                  <td>{{ rowTaskName(row.task) }}</td>
                   <td><strong>{{ scoreOf(row) }}</strong></td>
                   <td class="soft">{{ scoreDetail(row) }}</td>
                   <td>{{ row.repeat }}</td>
@@ -645,7 +669,7 @@ async function saveProfile() {
               </thead>
               <tbody>
                 <tr v-for="task in compareRows" :key="task">
-                  <td class="c-run"><strong>{{ task }}</strong></td>
+                  <td class="c-run"><strong>{{ rowTaskName(task) }}</strong></td>
                   <td v-for="col in compareCols" :key="col.runId + col.model">
                     <template v-if="compareCell(task, col)">
                       <strong>{{ cellScore(task, col) }}</strong>
@@ -681,7 +705,7 @@ async function saveProfile() {
                   <text
                     v-for="(task, i) in compareRows" :key="`lb${i}`"
                     :x="radarLabel(i).x" :y="radarLabel(i).y" :text-anchor="radarLabel(i).anchor" class="axis-label"
-                  >{{ shortTask(task) }}</text>
+                  >{{ shortTask(rowTaskName(task)) }}</text>
                   <g v-for="s in radarActive" :key="s.key">
                     <polygon :points="radarPolygon(s.key)" class="series" :fill="radarColor(s.key)" :stroke="radarColor(s.key)" />
                     <circle v-for="(p, i) in radarDots(s.key)" :key="i" :cx="p.x" :cy="p.y" r="3" :fill="radarColor(s.key)" />
@@ -951,6 +975,7 @@ summary { cursor: pointer; color: var(--color-ink-soft); font-size: 13px; }
 .dot.big { width: 12px; height: 12px; }
 .dot.ok { background: var(--color-success); }
 .dot.bad { background: var(--color-danger); }
+.dot.busy { background: var(--color-warn); }
 .sidenav-foot .dot { animation: soft-pulse 2.4s ease-in-out infinite; }
 
 /* 历史卡片操作按钮：固定尺寸、右侧对齐，切换文案不改变布局 */
