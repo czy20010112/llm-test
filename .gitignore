@@ -17,3 +17,7 @@ scripts/data/MMLU-Pro.jsonl
 scripts/data/aime_2025.jsonl
 scripts/data/gpqa_diamond_mc.jsonl
 scripts/data/mbppplus.jsonl
+scripts/data/ifeval.jsonl
+scripts/data/ifbench.jsonl
+scripts/data/safetybench_cn.jsonl
+scripts/data/xstest.jsonl

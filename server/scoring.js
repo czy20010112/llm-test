@@ -8,6 +8,9 @@ function extractChoice(value) {
     if (boxed) return boxed[1].toUpperCase();
     const labeled = line.match(/(?:最终答案|最终选项|final\s+answer|final\s+choice)\s*(?:是|为|is|:|：)?\s*\(?\s*([A-J])\b/i);
     if (labeled) return labeled[1].toUpperCase();
+    // "A. 是。" / "B、因为…" — a final line led by the choice letter + separator
+    const choiceLed = line.match(/^\s*[\(\[]?\s*([A-J])\s*[).。、:：]\s*\S/i);
+    if (choiceLed) return choiceLed[1].toUpperCase();
     const standalone = line.match(/^\s*[\(\[]?\s*([A-J])\s*[\)\].。]?\s*$/i);
     if (standalone) return standalone[1].toUpperCase();
   }

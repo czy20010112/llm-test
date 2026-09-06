@@ -144,7 +144,11 @@ def _judge_tests(req: JudgeRequest, workdir: str) -> list[dict]:
 
 
 def _judge_script(req: JudgeRequest, workdir: str) -> list[dict]:
-    """Run a fully self-contained harness script; exit code 0 == pass."""
+    """Run a fully self-contained harness script; exit code 0 == pass.
+
+    stdout is always returned (last 2KB) so harnesses can report structured
+    results (e.g. IFEval/IFBench per-instruction outcomes) on a "RESULT:" line.
+    """
     path = os.path.join(workdir, "script.py")
     with open(path, "w") as f:
         f.write(req.code)
@@ -152,6 +156,7 @@ def _judge_script(req: JudgeRequest, workdir: str) -> list[dict]:
     ok = rc == 0
     return [{
         "id": 0, "passed": ok,
+        "stdout": out[-2048:],
         "detail": "" if ok else f"rc={rc} out={out[-300:]!r} stderr={err[-500:]}",
     }]
 

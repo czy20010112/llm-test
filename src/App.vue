@@ -171,7 +171,7 @@ function removeModelRow(i: number) {
 // ---------- 新建评测：测试项目表格（逐行下拉 + 每行参数） ----------
 const taskRows = ref([{ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' }]);
 const openDd = ref(-1);
-const judgeKinds = ['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000'];
+const judgeKinds = ['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000', 'ifeval', 'ifbench'];
 const taskById = (id: string) => tasks.value.find((t) => t.id === id);
 
 function closeMenus(e: Event) {
@@ -261,8 +261,11 @@ function toggleCompare(id: string) {
 }
 
 // ---------- 结果 ----------
+// 速度探测没有百分比分值，用绝对值 t/s 展示（雷达图上按选中最高值定标）
+const isSpeedRow = (row: any) => Number.isFinite(row?.average?.tokPerSec);
 function scoreOf(row: any) {
   const a = row.average || {};
+  if (isSpeedRow(row)) return `${a.tokPerSec.toFixed(1)} t/s`;
   if (typeof a.score === 'number') return (a.score * 100).toFixed(1) + '%';
   return '—';
 }
@@ -303,11 +306,13 @@ const compareRows = computed(() => {
 function compareCell(task: string, col: { runId: string; model: string }) {
   const run = finishedRuns.value.find((r) => r.id === col.runId);
   const row = run && (run.rows || []).find((r: any) => normTask(r.task) === task && r.model === col.model);
-  return row ? { score: row.average?.score, detail: scoreDetail(row) } : null;
+  return row ? { score: row.average?.score, speed: isSpeedRow(row) ? row.average.tokPerSec : null, detail: scoreDetail(row) } : null;
 }
 function cellScore(task: string, col: { runId: string; model: string }): string {
   const cell = compareCell(task, col);
-  return cell && cell.score != null ? (cell.score * 100).toFixed(1) + '%' : '—';
+  if (!cell) return '—';
+  if (cell.speed != null) return `${cell.speed.toFixed(1)} t/s`;
+  return cell.score != null ? (cell.score * 100).toFixed(1) + '%' : '—';
 }
 
 // 历史行里的旧题库名称（“…（缓存题库）”）归一到当前口径，老结果也能和新结果同表对比
@@ -351,7 +356,25 @@ function radarLabel(i: number) {
   const cos = Math.cos(radarAngle(i, n));
   return { x: p.x, y: p.y + 4, anchor: Math.abs(cos) < 0.35 ? 'middle' : cos > 0 ? 'start' : 'end' };
 }
+function radarSpeedOf(key: string, task: string): number | null {
+  const [runId, model] = key.split('\u0000');
+  const cell = compareCell(task, { runId, model });
+  return cell && cell.speed != null ? cell.speed : null;
+}
+// 速度轴用绝对值 t/s，没有天然满分：选中曲线中最高的 t/s 定在 80% 半径（上限 = 最高值/0.8）
+const radarSpeedCeiling = computed(() => {
+  let max = 0;
+  for (const s of radarActive.value) {
+    for (const task of compareRows.value) {
+      const v = radarSpeedOf(s.key, task);
+      if (v != null && v > max) max = v;
+    }
+  }
+  return max > 0 ? max / 0.8 : 0;
+});
 function radarValue(key: string, task: string): number | null {
+  const speed = radarSpeedOf(key, task);
+  if (speed != null) return radarSpeedCeiling.value > 0 ? (speed / radarSpeedCeiling.value) * 100 : 0;
   const [runId, model] = key.split('\u0000');
   const cell = compareCell(task, { runId, model });
   return cell && cell.score != null ? Math.round(cell.score * 1000) / 10 : null;
@@ -647,7 +670,7 @@ async function saveProfile() {
                     <circle v-for="(p, i) in radarDots(s.key)" :key="i" :cx="p.x" :cy="p.y" r="3" :fill="radarColor(s.key)" />
                   </g>
                 </svg>
-                <p class="soft radar-note">外圈 = 100% · 勾选图例绘制曲线 · 本次未覆盖的项目按 0 绘制</p>
+                <p class="soft radar-note">外圈 = 100% · 勾选图例绘制曲线 · 未覆盖项目按 0 绘制 · 速度轴按选中最高 t/s 的 80% 定标</p>
               </div>
               <p v-else class="soft">本次对比覆盖的项目不足 3 项，雷达图至少需要 3 个维度。</p>
             </div>
@@ -675,6 +698,9 @@ async function saveProfile() {
                   mbppplus: '全部增强测试通过（沙箱执行）',
                   livecodebench: '隐藏测试全通过（stdin/函数式沙箱）',
                   ds1000: '官方扰动测试通过（沙箱执行）',
+                  ifeval: '官方校验器：全部约束满足（strict，沙箱执行）',
+                  ifbench: '官方校验器：域外约束全满足（strict，沙箱执行）',
+                  xstest: '安全提示应答视为通过，命中拒绝模式视为误拒',
                 } as Record<string, string>)[t.kind] }}</td>
                 <td>{{ t.defaultLimit || '—' }}</td>
               </tr>

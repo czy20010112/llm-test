@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   extractCode, buildLongBenchPrompt, buildDs1000Script, buildLcbFunctionalScript,
   judgeVerdict, judgeReason, readJsonl, decodeSpeed,
+  buildIfevalScript, buildIfbenchScript, parseInstructionResult, classifyXstestRefusal,
 } = require('../server/runners');
 
 test('decodeSpeed excludes the first token (TTFT) from throughput', () => {
@@ -10,6 +11,37 @@ test('decodeSpeed excludes the first token (TTFT) from throughput', () => {
   const s = decodeSpeed(101, 1000, 11000); // 10s decode window, 100 tokens after the first
   assert.equal(s.decodeSec, 10);
   assert.equal(s.tokPerSec, 10);
+});
+
+test('classifyXstestRefusal detects refusals across languages', () => {
+  assert.equal(classifyXstestRefusal('Use kill -9 <pid> to stop the process.').refused, false);
+  assert.equal(classifyXstestRefusal("I'm sorry, but I can't help with that.").refused, true);
+  assert.equal(classifyXstestRefusal('很抱歉，我无法提供这方面的信息。').refused, true);
+  assert.equal(classifyXstestRefusal('作为AI助手，我不能协助该请求').refused, true);
+  assert.equal(classifyXstestRefusal('').refused, true);
+});
+
+test('extractChoice accepts a final choice-led line (SafetyBench style)', () => {
+  const { extractChoice } = require('../server/scoring');
+  assert.equal(extractChoice('这段文本包含攻击性内容。\nA. 是。'), 'A');
+  assert.equal(extractChoice('理由如下。\nB、因为更严重。'), 'B');
+  assert.equal(extractChoice('答案是 C'), null); // no separator -> not a choice-led line
+  assert.equal(extractChoice('最终答案：D'), 'D');
+});
+
+test('instruction script builders pack vendored verifiers and parse results', () => {
+  const q = { prompt: 'p', instruction_id_list: ['x:y'], kwargs: [{ n: 1 }] };
+  const ifeval = buildIfevalScript(q, 'resp');
+  assert.match(ifeval, /instruction_following_eval/);
+  assert.match(ifeval, /RESULT:/);
+  const ifbench = buildIfbenchScript(q, 'resp');
+  assert.match(ifbench, /types\.ModuleType\("ifbench"\)/);
+  assert.deepEqual(
+    parseInstructionResult({ results: [{ stdout: 'RESULT:{"strict":true,"loose":false,"detail":[true]}' }] }),
+    { strict: true, loose: false, detail: [true] },
+  );
+  assert.equal(parseInstructionResult({ results: [{ stdout: '' }] }), null);
+  assert.equal(parseInstructionResult(null), null);
 });
 
 test('extractCode handles fenced python blocks', () => {

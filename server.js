@@ -8,6 +8,7 @@ const {
   buildLongBenchPrompt, buildHumanEvalPrompt, buildMbppPrompt,
   buildLiveCodeBenchPrompt, buildDs1000Prompt,
   buildDs1000Script, buildLcbFunctionalScript, judgeVerdict, judgeReason,
+  buildIfevalScript, buildIfbenchScript, parseInstructionResult, classifyXstestRefusal,
 } = require('./server/runners');
 
 const app = express();
@@ -59,8 +60,12 @@ const tasks = [
   { id: 'mbppplus', name: 'MBPP+（代码生成）', ability: '基础编程任务代码生成的正确性（增强测试集）', kind: 'mbppplus', file: 'mbppplus.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
   { id: 'livecodebench', name: 'LiveCodeBench（竞赛编程）', ability: '竞赛级算法编程（stdin / 函数式，隐藏测试）', kind: 'livecodebench', file: 'livecodebench.jsonl', defaultLimit: 30, defaultMaxTokens: 8192 },
   { id: 'ds1000', name: 'DS-1000（数据科学编程）', ability: 'NumPy/Pandas/SciPy/Sklearn/Matplotlib 真实数据科学任务', kind: 'ds1000', file: 'ds1000.jsonl', defaultLimit: 40, defaultMaxTokens: 8192 },
+  { id: 'ifeval', name: 'IFEval（指令遵循）', ability: '可验证指令约束的精确遵循（格式/字数/关键词等）', kind: 'ifeval', file: 'ifeval.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'ifbench', name: 'IFBench（指令泛化）', ability: '域外可验证指令的泛化遵循（AllenAI 2025）', kind: 'ifbench', file: 'ifbench.jsonl', defaultLimit: 100, defaultMaxTokens: 4096 },
+  { id: 'safetybench_cn', name: 'SafetyBench（中文安全）', ability: '安全风险场景选择题（违法/隐私/歧视/身心健康等）', kind: 'mmlu', file: 'safetybench_cn.jsonl', defaultLimit: 100, defaultMaxTokens: 2048 },
+  { id: 'xstest', name: 'XSTest（过度拒绝）', ability: '安全提示误拒校准（看起来危险、实际安全）', kind: 'xstest', file: 'xstest.jsonl', defaultLimit: 250, defaultMaxTokens: 1024 },
 ];
-const CODE_KINDS = new Set(['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000']);
+const CODE_KINDS = new Set(['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000', 'ifeval', 'ifbench']);
 
 app.get('/api/tasks', (req, res) => res.json(tasks));
 app.get('/api/catalog', (req, res) => res.json({ protocolVersion: '1.0', manifests: tasks.map((t) => ({ ...t, version: '1.0', supports: ['standard', 'exploration'] })) }));
@@ -341,6 +346,22 @@ async function measure(run, b, model, task, cfgT = {}) {
         }), 'ds1000');
         tally(verdict.passed ? 'correct' : 'incorrect');
         logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
+      } else if (task.kind === 'ifeval' || task.kind === 'ifbench') {
+        // 官方校验器（vendored 到 judge/verifiers/）：prompt 原样下发，strict 口径判分
+        const r = await chat(b, model, q.prompt, { max_tokens: outputLimit, runId: run.id });
+        const script = task.kind === 'ifeval' ? buildIfevalScript(q, (r.text || '').trim()) : buildIfbenchScript(q, (r.text || '').trim());
+        const jres = await judgeRun({ mode: 'script', code: script, timeout: 30 });
+        const parsed = parseInstructionResult(jres);
+        const passed = Boolean(parsed && parsed.strict);
+        tally(passed ? 'correct' : 'incorrect');
+        const failed = parsed ? q.instruction_id_list.filter((id, i) => !parsed.detail[i]) : q.instruction_id_list;
+        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${passed ? '通过' : '未通过'}（strict ${parsed ? (parsed.strict ? '✓' : '✗') : '?'} / loose ${parsed ? (parsed.loose ? '✓' : '✗') : '?'}）${failed.length ? `｜未满足约束：${failed.join(', ')}` : ''}｜回答前 120 字：${(r.text || '').slice(0, 120)}`);
+      } else if (task.kind === 'xstest') {
+        // 250 条"看起来危险、实际安全"的提示：正常作答=对，误拒=错
+        const r = await chat(b, model, q.prompt, { max_tokens: outputLimit, runId: run.id });
+        const v = classifyXstestRefusal(r.text);
+        tally(v.refused ? 'incorrect' : 'correct');
+        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${v.refused ? `误拒（${v.reason}）` : '正常作答'}｜${q.type}｜回答：${(r.text || '').slice(0, 100)}`);
       } else {
         throw new Error(`未实现的测试类型：${task.kind}`);
       }

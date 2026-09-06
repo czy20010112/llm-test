@@ -20,7 +20,7 @@ docker compose -f judge-compose.yaml up -d --build
 # 宿主通过 127.0.0.1:8901 访问（internal 网络 + socat 转发，见 docker/judge-compose.yaml 注释）
 ```
 
-## 测试协议（9 项）
+## 测试协议（13 项）
 
 统一口径：temperature=0、抑制思维链（`enable_thinking=false`）；选择题只认明确的最终答案（`最终答案：X` / `\boxed{X}` / 末行独立字母），推理无结论计"未知"并保留在分母中。
 
@@ -35,6 +35,10 @@ docker compose -f judge-compose.yaml up -d --build
 | MBPP+ | 378 题 | evalplus 增强测试全通过 | 沙箱执行 |
 | LiveCodeBench | 342 题 (v5+v6) | 隐藏测试全通过 | stdin 用 stdout 比对；函数式用 JSON 参数调函数（每题最多 100 用例 / 1MB） |
 | DS-1000 | 1000 题 | 官方扰动测试（`test_execution`） | 沙箱含 2021-2023 科学栈：numpy 1.24 / pandas 1.5 / scipy 1.10 / sklearn 1.2 / matplotlib 3.7 / seaborn / pillow |
+| IFEval | 541 题 | 官方校验器 strict（全部约束满足） | Google 可验证指令（格式/字数/关键词…），判分代码 vendor 在 `judge/verifiers/ifeval/` |
+| IFBench | 300 题 | 官方校验器 strict | AllenAI 2025 域外约束泛化，`judge/verifiers/ifbench/`；判题沙箱需 nltk/emoji/syllapy/langdetect |
+| SafetyBench（中文） | 11435 题 | 选项字母匹配 | 清华 7 类风险场景 MCQ，官方答案取自源仓库 `opensource_data/` |
+| XSTest | 250 题 | 拒绝模式检测（中英） | 250 条"看似危险实际安全"的提示，误拒=错、正常作答=对 |
 
 - 代码题判分 = pass@1：温度 0 生成一次，全部抽样测试通过才计正确。
 - 题目级失败（上下文超限、judge 不可达）计"未知"，不会让整次运行崩溃。
@@ -46,11 +50,12 @@ docker compose -f judge-compose.yaml up -d --build
 
 ## 数据准备
 
-原始数据在 `benchmarks/raw/`（HF 下载），转换为任务 JSONL：
+原始数据在 `benchmarks/raw/`（HF/GitHub 下载），转换为任务 JSONL：
 
 ```powershell
 python scripts/prepare_cached_tasks.py   # GPQA / AIME / MMLU-Pro（data/*.parquet -> scripts/data/）
 node scripts/prepare_benchmarks.js       # LongBench v2 / LCB（含 zlib+pickle 解包）/ DS-1000 / HE+ -> scripts/data/
+node scripts/prepare_if_safety.js        # IFEval / IFBench / SafetyBench-zh / XSTest -> scripts/data/
 ```
 
 生成的 JSONL 较大（LongBench v2 ≈ 465MB），已加入 .gitignore。

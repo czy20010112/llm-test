@@ -11,6 +11,7 @@ const path = require('path');
 const { judgeRun } = require('../server/judge');
 const {
   readJsonl, buildDs1000Script, buildLcbFunctionalScript, judgeVerdict,
+  buildIfevalScript, buildIfbenchScript, parseInstructionResult, classifyXstestRefusal,
 } = require('../server/runners');
 
 const RAW = path.join(__dirname, '..', 'benchmarks', 'raw');
@@ -68,6 +69,48 @@ async function main() {
     const v = judgeVerdict(await judgeRun({ mode: 'script', code: buildLcbFunctionalScript(`def ${lcbFn.entry}(*a):\n    return None`, lcbFn.tests, lcbFn.entry), timeout: 10 }));
     check('LCB functional wrong solution rejected', !v.passed);
   }
+
+  // --- IFEval : official verifier — compliant response passes, violating one fails
+  {
+    const { rows } = readJsonl('ifeval.jsonl', 0);
+    const q = rows.find((x) => x.instruction_id_list.length === 1 && x.instruction_id_list[0] === 'change_case:capital_word_frequency' && x.kwargs[0].capital_frequency && x.kwargs[0].capital_relation === 'at least');
+    if (q) {
+      const f = q.kwargs[0].capital_frequency;
+      const good = Array.from({ length: f }, (_, i) => `WORD${i}`).join(' ') + ' rest of the answer.';
+      const bad = 'no capital words here at all';
+      const goodV = parseInstructionResult(await judgeRun({ mode: 'script', code: buildIfevalScript(q, good), timeout: 30 }));
+      const badV = parseInstructionResult(await judgeRun({ mode: 'script', code: buildIfevalScript(q, bad), timeout: 30 }));
+      check(`IFEval verifier accepts compliant (${q.instruction_id_list[0]}, ≥${f})`, Boolean(goodV && goodV.strict), JSON.stringify(goodV));
+      check('IFEval verifier rejects violation', Boolean(badV && !badV.strict), JSON.stringify(badV));
+    } else {
+      check('IFEval capital-frequency sample present', false, 'no matching instruction in first 40');
+    }
+  }
+
+  // --- IFBench : official verifier — keyword constraints enforced
+  {
+    const { rows } = readJsonl('ifbench.jsonl', 50);
+    const q = rows.find((x) => x.instruction_id_list.length === 1 && x.instruction_id_list[0].startsWith('count:keywords') && (x.kwargs[0].keyword1 || x.kwargs[0].end_phrase || x.kwargs[0].forbidden_words));
+    if (q && q.kwargs[0].keyword1 && q.kwargs[0].keyword2) {
+      const kws = Object.keys(q.kwargs[0]).filter((k) => /^keyword\d+$/.test(k)).map((k) => q.kwargs[0][k]);
+      // KeywordsMultipleChecker demands keyword_i exactly 1/2/3/5/7 times
+      const counts = [1, 2, 3, 5, 7];
+      const good = 'Answer: ' + kws.map((k, i) => Array(counts[i]).fill(k).join(' ')).join(' ') + '.';
+      const bad = 'An answer with neither special term.';
+      const goodV = parseInstructionResult(await judgeRun({ mode: 'script', code: buildIfbenchScript(q, good), timeout: 30 }));
+      const badV = parseInstructionResult(await judgeRun({ mode: 'script', code: buildIfbenchScript(q, bad), timeout: 30 }));
+      check(`IFBench verifier accepts compliant (${q.instruction_id_list[0]}, ${kws.length} keywords)`, Boolean(goodV && goodV.strict), JSON.stringify(goodV));
+      check('IFBench verifier rejects missing keywords', Boolean(badV && !badV.strict), JSON.stringify(badV));
+    } else {
+      check('IFBench keywords sample present', false, 'no matching instruction in first 50');
+    }
+  }
+
+  // --- XSTest : refusal classifier
+  check('XSTest classifier: plain answer = comply', !classifyXstestRefusal('You can kill a Python process with kill -9 <pid>.').refused);
+  check('XSTest classifier: "I cannot help with that" = refuse', classifyXstestRefusal("I'm sorry, but I can't help with that request.").refused);
+  check('XSTest classifier: 中文拒绝识别', classifyXstestRefusal('很抱歉，我无法提供这方面的信息。').refused);
+  check('XSTest classifier: empty = refuse', classifyXstestRefusal('').refused);
 
   console.log(failures ? `\n${failures} failure(s)` : '\nALL PIPELINE CHECKS PASSED');
   process.exit(failures ? 1 : 0);
