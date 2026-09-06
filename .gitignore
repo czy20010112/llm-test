@@ -8,3 +8,4 @@ data/workbench-state.json
 *.log
 scripts/data/*.jsonl
 server.log
+data/service.pid

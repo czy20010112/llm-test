@@ -22,6 +22,18 @@ docker compose -f judge-compose.yaml up -d --build
 # 宿主通过 127.0.0.1:8901 访问（internal 网络 + socat 转发，见 docker/judge-compose.yaml 注释）
 ```
 
+## 启动与停止（Windows 脚本）
+
+仓库根目录提供三个入口（双击即可，也可命令行调用）：
+
+| 入口 | 行为 |
+|---|---|
+| `启动判题服务.bat` | 命令框前台启动：实时滚动评测日志（每题判分、判题中、报错等），`Ctrl+C` 退出服务 |
+| `后台启动判题服务.vbs` | 隐式启动（无窗口），就绪后弹 Windows 通知「判题服务启动成功」 |
+| `停止判题服务.vbs` | 停止服务并弹 Windows 通知「判题服务已停止」 |
+
+脚本会自动：定位 Node（含 fnm 默认别名兜底）、首次运行自动 `npm install`、检查 3000 端口占用，并尽力拉起 WSL 判题沙箱（`llmtest-judge-proxy` 转发 + `llm-test-judge` 容器；沙箱离线只影响代码/指令类判分，不影响启动）。通知经由 `scripts/service/*.ps1` 调用 Windows Toast——需要在系统「通知」设置中允许 PowerShell 通知。注意：卡巴斯基等杀软的主动防御可能对"隐藏窗口启动服务类脚本"误报（PDM:Trojan 启发式），如有拦截请将 `D:\AI\llm-test` 加入信任区。
+
 ## 测试协议（13 项）
 
 统一口径：temperature=0、默认抑制思维链（`enable_thinking=false`）；与官方榜单重叠的四项按官方口径开启思考（`reasoning_effort=xhigh`）：AIME 2025 输出预算 38,912、GPQA Diamond / LiveCodeBench / IFBench 为 32,768（依据 Qwen3 技术报告与 Qwen3.8-27B 模型卡）。选择题只认明确的最终答案（`最终答案：X` / `\boxed{X}` / 末行独立字母），推理无结论计"未知"并保留在分母中。

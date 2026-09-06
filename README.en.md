@@ -22,6 +22,18 @@ docker compose -f judge-compose.yaml up -d --build
 # host reaches it via 127.0.0.1:8901 (internal network + socat forwarder, see docker/judge-compose.yaml)
 ```
 
+## Start / Stop (Windows)
+
+Three double-clickable entry points live in the repo root:
+
+| Entry | Behavior |
+|---|---|
+| `启动判题服务.bat` | Foreground console: streams live eval logs (per-item judging, errors); `Ctrl+C` stops the service |
+| `后台启动判题服务.vbs` | Hidden start (no window); a Windows toast 「判题服务启动成功」 appears once ready |
+| `停止判题服务.vbs` | Stops the service and toasts 「判题服务已停止」 |
+
+The scripts locate Node (with an fnm default-alias fallback), run `npm install` on first use, check the port, and best-effort start the WSL judge sandbox (the `llmtest-judge-proxy` forwarder + `llm-test-judge` container; an offline sandbox only affects code/instruction scoring, not startup). Toasts are delivered via `scripts/service/*.ps1` using Windows Toast — allow notifications for PowerShell in system settings. Note: proactive AV heuristics (e.g. Kaspersky PDM:Trojan) may flag "hidden-window service launcher" scripts; if blocked, add `D:\AI\llm-test` to your AV trust zone.
+
 ## Protocols (13)
 
 Common sampling: temperature=0, single generation (pass@1). Protocols overlapping the official leaderboard run with thinking on per the official setup (`reasoning_effort=xhigh`): AIME 2025 with a 38,912-token output budget, GPQA Diamond / LiveCodeBench / IFBench with 32,768 (per the Qwen3 tech report and the Qwen3.8-27B model card); all other protocols keep thinking disabled by default (`enable_thinking=false`). Code and instruction scoring reads only the post-thinking content. MCQ scoring accepts an explicit final answer only (最终答案：X / \boxed{X} / trailing choice letter); reasoning without a conclusion counts as "unknown" and stays in the denominator.
