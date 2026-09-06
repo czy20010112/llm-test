@@ -45,12 +45,11 @@ docker compose -f judge-compose.yaml up -d --build
 
 ## 界面
 
-新控制台（`/`）：总览 / 新建评测（模型逐栏下拉、测试项目参数表格，题数/重复/并发/max_tokens 可逐行覆盖）/ 运行队列（只显示进行中的运行，日志实时滚动）/ 历史记录（逐条删除、选入对比；运行结束时自动跳转或弹出右上角完成通知）/ 对比分析（行=测试项目，列=结果×模型，下方维度雷达图可叠加多条"结果×模型"曲线）/ 协议与基线 / 环境设置。
-旧控制台（`/legacy/`）仍完整可用，两者共用同一套 API 与结果存储（`data/runs.json`）。
+新控制台（`/`）：总览 / 新建评测（模型逐栏下拉、测试项目参数表格，题数/重复/并发/max_tokens 可逐行覆盖）/ 运行队列（只显示进行中的运行，日志实时滚动）/ 历史记录（逐条删除、选入对比；运行结束时自动跳转或弹出右上角完成通知）/ 对比分析（行=测试项目，列=结果×模型，下方维度雷达图可叠加多条"结果×模型"曲线，速度轴按选中最高 t/s 的 80% 定标）/ 协议与基线 / 环境设置。
 
 ## 数据准备
 
-原始数据在 `benchmarks/raw/`（HF/GitHub 下载），转换为任务 JSONL：
+原始数据在 `benchmarks/raw/`（大文件可用 `docker/download-benchmarks.sh` 经代理重新下载），转换为任务 JSONL：
 
 ```powershell
 python scripts/prepare_cached_tasks.py   # GPQA / AIME / MMLU-Pro（data/*.parquet -> scripts/data/）
@@ -58,7 +57,7 @@ node scripts/prepare_benchmarks.js       # LongBench v2 / LCB（含 zlib+pickle 
 node scripts/prepare_if_safety.js        # IFEval / IFBench / SafetyBench-zh / XSTest -> scripts/data/
 ```
 
-生成的 JSONL 较大（LongBench v2 ≈ 465MB），已加入 .gitignore。
+生成的 JSONL 较大（LongBench v2 ≈ 465MB），已加入 .gitignore；`scripts/data/` 是评测运行与判分校验的实际数据源。
 
 ## 验证
 

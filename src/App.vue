@@ -425,7 +425,6 @@ async function saveProfile() {
         </button>
       </nav>
       <div class="sidenav-foot">
-        <a href="/legacy/">旧版控制台</a>
         <span class="dot-row">
           <span class="dot" :class="preflight?.judge?.ok ? 'ok' : 'bad'" :title="preflight?.judge?.ok ? '判题沙箱在线' : '判题沙箱离线'"></span>
           judge
@@ -455,7 +454,7 @@ async function saveProfile() {
                 <span class="dot big" :class="preflight?.judge?.ok ? 'ok' : 'bad'"></span>
                 {{ preflight?.judge?.ok ? '在线（Docker 隔离，无外网）' : '离线 — 代码类评测不可用' }}
               </p>
-              <p class="soft">HumanEval+ / MBPP+ / LiveCodeBench / DS-1000 需要判题沙箱</p>
+              <p class="soft">代码与指令遵循判分依赖沙箱：HumanEval+ / MBPP+ / LiveCodeBench / DS-1000 / IFEval / IFBench</p>
             </div>
             <div class="card">
               <h3>正在运行</h3>
@@ -465,7 +464,7 @@ async function saveProfile() {
             <div class="card">
               <h3>测试协议</h3>
               <p class="big-num">{{ tasks.length }}</p>
-              <p>速度探测 + 3 题库 + 5 项代码/长上下文基准</p>
+              <p>1 连通性 + 4 知识/长文 + 4 代码 + 2 指令遵循 + 2 安全</p>
             </div>
           </div>
         </template>
@@ -681,10 +680,10 @@ async function saveProfile() {
         <!-- 协议与基线 -->
         <template v-else-if="active === 'protocols'">
           <div class="panel">
-            <p>统一口径：temperature=0、抑制思维链（enable_thinking=false）；所有题目对每个模型一致。选择题判分只认明确的最终答案（最终答案：X / \boxed{X} / 末行独立字母），推理无结论计"未知"并保留在分母中，避免把截断的推理误判为错误。</p>
+            <p>统一采样口径：temperature=0、单次生成（pass@1）；除 LiveCodeBench 按官方口径开启思考外，其余协议默认抑制思维链（enable_thinking=false）。代码与指令类判分只看思考后的正文。选择题只认明确的最终答案（最终答案：X / \boxed{X} / 末行选项字母），推理无结论计"未知"并保留在分母中，避免把截断的推理误判为错误。</p>
           </div>
           <table class="table">
-            <thead><tr><th>协议</th><th>能力</th><th>判分方式</th><th>默认题数</th></tr></thead>
+            <thead><tr><th>协议</th><th>能力</th><th>判分方式</th><th>默认题数 / 全量</th></tr></thead>
             <tbody>
               <tr v-for="t in tasks" :key="t.id">
                 <td>{{ t.name }}</td>
@@ -703,12 +702,12 @@ async function saveProfile() {
                   ifbench: '官方校验器：域外约束全满足（strict，沙箱执行）',
                   xstest: '安全提示应答视为通过，命中拒绝模式视为误拒',
                 } as Record<string, string>)[t.kind] }}</td>
-                <td>{{ t.defaultLimit || '—' }}</td>
+                <td>{{ t.defaultLimit || '—' }}<template v-if="t.ability.includes('全量')"> / {{ t.ability.split('｜全量 ')[1] }}</template></td>
               </tr>
             </tbody>
           </table>
           <div class="panel">
-            <p class="soft">代码类题目要求模型只输出代码；判题在 WSL2 Docker 沙箱内执行（无外网、CPU/内存/文件系统受限、单测超时 6-30s）。LongBench v2 默认取前 30 题（可调），LiveCodeBench 每题最多 100 个测试用例。</p>
+            <p class="soft">代码与指令类题目在 WSL2 Docker 沙箱内判分（无外网、CPU/内存/文件系统受限、单测超时 6-60s）；IFEval/IFBench 判分使用 vendor 的官方校验器（judge/verifiers/）。默认题数是快速抽样口径，把"题数"填成全量即为深度评测。数据集重新生成：node scripts/prepare_*.js（原始数据见 benchmarks/raw，大文件可用 docker/download-benchmarks.sh 重新下载）。</p>
           </div>
         </template>
 
@@ -831,6 +830,7 @@ fieldset.panel legend { padding: 0 8px; color: var(--color-ink-soft); font-size:
 
 .row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .row > label { width: 90px; flex: none; color: var(--color-ink-soft); font-size: 13px; }
+.row > label.inline { width: auto; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; }
 
 .input {
   background: var(--color-paper); color: var(--color-ink);
