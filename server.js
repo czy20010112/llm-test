@@ -99,6 +99,8 @@ const tasks = [
   { id: 'xstest', name: 'XSTest（过度拒绝）', name_en: 'XSTest (Over-refusal)', ability: '安全提示误拒校准（看起来危险、实际安全）｜全量 250 题', ability_en: 'Exaggerated-safety calibration (safe but scary prompts) | 250 items', kind: 'xstest', file: 'xstest.jsonl', defaultLimit: 250, defaultMaxTokens: 1024 },
 ];
 const CODE_KINDS = new Set(['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000', 'ifeval', 'ifbench']);
+const REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
+const LEGACY_THINKING_KINDS = new Set(['gpqa', 'aime', 'livecodebench', 'ifbench']);
 
 app.get('/api/tasks', (req, res) => res.json(tasks));
 app.get('/api/catalog', (req, res) => res.json({ protocolVersion: '1.0', manifests: tasks.map((t) => ({ ...t, version: '1.0', supports: ['standard', 'exploration'] })) }));
@@ -236,8 +238,11 @@ app.post('/api/runs/:id/resume', (req, res) => {
   if (!run) return res.status(404).json({ error: 'not found' });
   if (run.status === 'running') return res.status(409).json({ error: '该运行仍在进行中' });
   const kept = new Set();
-  run.rows = (run.rows || []).filter((row) => row.status === 'done');
-  for (const row of run.rows) kept.add(row.model + '\u0000' + row.task);
+  // Keep partial rows: their checkpoint contains the completed questions/repeats
+  // needed to resume instead of starting the task over.
+  for (const row of run.rows || []) {
+    if (row.status === 'done') kept.add(row.model + '\u0000' + row.task);
+  }
   const totalPairs = (run.models || []).length * (run.taskConfigs || []).length;
   if (kept.size >= totalPairs) return res.status(400).json({ error: '所有测试项目均已完成，无需继续' });
   run.status = 'running';
@@ -263,13 +268,16 @@ app.post('/api/runs', async (req, res) => {
   const rawTasks = Array.isArray(b.tasks) ? b.tasks.filter(Boolean) : [];
   if (!models.length || !rawTasks.length) return res.status(400).json({ error: '至少选择一个模型和一个测试项目' });
   // Per-task overrides: entries may be plain ids (legacy UI, run-level params)
-  // or {id, limit, repeats, concurrency, maxTokens}.
+  // or {id, limit, repeats, concurrency, maxTokens, thinking, reasoningEffort}.
   const taskConfigs = rawTasks.map((t) => {
     const cfg = { id: typeof t === 'string' ? t : t.id };
     const num = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
     const own = typeof t === 'object' && t ? t : b;
     cfg.limit = num(own.limit); cfg.repeats = num(own.repeats);
     cfg.concurrency = num(own.concurrency); cfg.maxTokens = num(own.maxTokens);
+    cfg.thinking = own.thinking === true;
+    cfg.reasoningEffort = cfg.thinking && REASONING_EFFORTS.has(String(own.reasoningEffort))
+      ? String(own.reasoningEffort) : null;
     return cfg;
   });
   if (taskConfigs.some((c) => CODE_KINDS.has(tasks.find((t) => t.id === c.id)?.kind))) {
@@ -409,15 +417,17 @@ function stripThink(s) {
   return s.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').replace(/<think>[\s\S]*$/i, '').trim();
 }
 async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
+  const thinking = resolveThinking(cfgT, task);
+  const effort = thinking ? resolveReasoningEffort(cfgT) : undefined;
   if (task.kind === 'smoke') {
     // 吐字速度要有参考意义：先预热（llama-swap 冷启动加载不算 TTFT），再用一个
     // 需要持续输出数百 token 的流式请求测 生成速度（不含首 token）与首 token 延迟。
     const outputLimit = Math.min(65536, Math.max(256, Number(cfgT.maxTokens) || task.defaultMaxTokens || 2048));
     const hbLabel = `${model} / ${task.name}`;
     const w0 = Date.now();
-    const warm = await chat(b, model, '请只回复：OK。', { max_tokens: 16, runId: run.id, heartbeat: hbLabel });
+    const warm = await chat(b, model, '请只回复：OK。', { max_tokens: 16, runId: run.id, heartbeat: hbLabel, thinking, effort });
     logLine(run, `${model} / ${task.name} / 预热完成 ${((Date.now() - w0) / 1000).toFixed(1)}s（含可能的模型加载），响应：${warm.text.trim().slice(0, 30) || '(空)'}`);
-    const s = await chatStream(b, model, SMOKE_PROMPT, { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel });
+    const s = await chatStream(b, model, SMOKE_PROMPT, { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel, thinking, effort });
     logLine(run, `${model} / ${task.name} / 首 token ${(s.ttftMs / 1000).toFixed(2)}s · 生成 ${s.tokPerSec.toFixed(1)} tok/s · 共 ${s.tokens} token${s.finishReason === 'length' ? '（达到 max_tokens 上限，速度可信）' : ''}`);
     return { ok: 1, firstMs: s.ttftMs, tokens: s.tokens, tokPerSec: s.tokPerSec, output: s.text.slice(0, 80), items: {} };
   }
@@ -453,7 +463,7 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
     logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：请求中…`);
     try {
       if (task.kind === 'longbench2') {
-        const r = await chat(b, model, buildLongBenchPrompt(q), { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel });
+        const r = await chat(b, model, buildLongBenchPrompt(q), { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel, thinking, effort });
         const verdict = scoreChoice(q.answer, (r.text || '').trim());
         tally(verdict.status, qi);
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
@@ -461,22 +471,20 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         const prompt = task.kind === 'gpqa'
           ? `请解答下面选择题。最后一行必须严格写成“最终答案：X”或“\\boxed{X}”，X只能是 A、B、C 或 D。\n${q.problem}`
           : `请解答下面选择题。最后一行必须严格写成“最终答案：X”或“\\boxed{X}”，X只能是 A-J。\n${q.question}\n${q.options_text}`;
-        // GPQA 按官方榜单口径开启思考（xhigh）；MMLU-Pro 知识题保持非思考
-        const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id, thinking: task.kind === 'gpqa' });
+        const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id, thinking, effort });
         const verdict = scoreChoice(String(q.answer || '').toUpperCase(), stripThink((r.text || '').trim()));
         tally(verdict.status, qi);
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
       } else if (task.kind === 'aime') {
         const prompt = `请解答下面AIME数学题。最后一行必须严格写成“最终答案：N”或“\\boxed{N}”，N是0到999的整数。\n${q.problem}`;
-        // 官方口径：思考开启，输出预算 38,912（Qwen3 技术报告对 AIME'25 的延长设置）
-        const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id, thinking: true });
+        const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id, thinking, effort });
         const verdict = scoreAime(String(q.answer), stripThink(String(r.text || r.reasoningText || '').trim()));
         tally(verdict.status, qi);
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
       } else if (task.kind === 'humanevalplus' || task.kind === 'mbppplus') {
         const entry = task.kind === 'humanevalplus' ? q.entry_point : (q.code.match(/def\s+([A-Za-z_]\w*)\s*\(/) || [])[1];
         const prompt = task.kind === 'humanevalplus' ? buildHumanEvalPrompt(q) : buildMbppPrompt(q, entry || 'solution');
-        const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel });
+        const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel, thinking, effort });
         const code = extractCode(r.text);
         const verdict = judgeVerdict(await judgeRun({
           mode: 'tests', code, entry_point: entry, test_code: q.test, timeout: 15,
@@ -484,8 +492,8 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         tally(verdict.passed ? 'correct' : 'incorrect', qi);
         logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else if (task.kind === 'livecodebench') {
-        // 官方口径：开启思考；判分只取思考后的正文（reasoning_content / <think> 已剥离）
-        const r = await chat(b, model, buildLiveCodeBenchPrompt(q), { max_tokens: outputLimit, runId: run.id, thinking: true });
+        // 判分只取思考后的正文（reasoning_content / <think> 已剥离）
+        const r = await chat(b, model, buildLiveCodeBenchPrompt(q), { max_tokens: outputLimit, runId: run.id, thinking, effort });
         const code = extractCode(r.text);
         let verdict;
         if (q.mode === 'functional') {
@@ -500,7 +508,7 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         tally(verdict.passed ? 'correct' : 'incorrect', qi);
         logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else if (task.kind === 'ds1000') {
-        const r = await chat(b, model, buildDs1000Prompt(q), { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel });
+        const r = await chat(b, model, buildDs1000Prompt(q), { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel, thinking, effort });
         const solution = extractCode(r.text, { solutionMarkers: true });
         const verdict = judgeVerdict(await judgeRun({
           mode: 'script', code: buildDs1000Script(q.code_context, solution), timeout: 60,
@@ -509,8 +517,7 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else if (task.kind === 'ifeval' || task.kind === 'ifbench') {
         // 官方校验器（vendored 到 judge/verifiers/）：prompt 原样下发，strict 口径判分
-        // IFBench 与官方榜单口径一致：开启思考（xhigh）；IFEval 保持非思考
-        const r = await chat(b, model, q.prompt, { max_tokens: outputLimit, runId: run.id, thinking: task.kind === 'ifbench' });
+        const r = await chat(b, model, q.prompt, { max_tokens: outputLimit, runId: run.id, thinking, effort });
         const response = stripThink((r.text || '').trim());
         const script = task.kind === 'ifeval' ? buildIfevalScript(q, response) : buildIfbenchScript(q, response);
         const jres = await judgeRun({ mode: 'script', code: script, timeout: 30 });
@@ -521,7 +528,7 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${passed ? '通过' : '未通过'}（strict ${parsed ? (parsed.strict ? '✓' : '✗') : '?'} / loose ${parsed ? (parsed.loose ? '✓' : '✗') : '?'}）${failed.length ? `｜未满足约束：${failed.join(', ')}` : ''}｜回答前 120 字：${(r.text || '').slice(0, 120)}`);
       } else if (task.kind === 'xstest') {
         // 250 条"看起来危险、实际安全"的提示：正常作答=对，误拒=错
-        const r = await chat(b, model, q.prompt, { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel });
+        const r = await chat(b, model, q.prompt, { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel, thinking, effort });
         const v = classifyXstestRefusal(r.text);
         tally(v.refused ? 'incorrect' : 'correct', qi);
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${v.refused ? `误拒（${v.reason}）` : '正常作答'}｜${q.type}｜回答：${(r.text || '').slice(0, 100)}`);
@@ -551,6 +558,17 @@ function taskLimit(cfgT, task) {
   return task.defaultLimit || 0;
 }
 
+// New runs persist an explicit boolean. Older runs omitted it and used the
+// former official-thinking defaults, so keep those runs reproducible.
+function resolveThinking(cfgT, task) {
+  return typeof cfgT.thinking === 'boolean' ? cfgT.thinking : LEGACY_THINKING_KINDS.has(task.kind);
+}
+
+function resolveReasoningEffort(cfgT) {
+  if (REASONING_EFFORTS.has(String(cfgT.reasoningEffort))) return String(cfgT.reasoningEffort);
+  return 'xhigh';
+}
+
 function verdictLabel(verdict, r) {
   return verdict.status === 'unknown' ? (r.finishReason === 'length' ? '未知（输出达到长度上限）' : '未知（没有明确最终答案）')
     : verdict.status === 'correct' ? '正确' : '错误';
@@ -559,6 +577,20 @@ function verdictLabel(verdict, r) {
 // Sustained-output prompt for the speed probe: long enough that decode speed
 // dominates over TTFT, short enough to finish well inside default max_tokens.
 const SMOKE_PROMPT = '请以“城市清晨”为主题写一篇约800字的散文。要求：语言流畅自然，有具体的画面、声音和细节描写，分3到4个自然段。除正文外不要输出任何解释或标题。';
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+const THINKING_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+const CONFIGURED_REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS);
+
+function requestTimeoutMs(opts = {}) {
+  if (Number.isFinite(CONFIGURED_REQUEST_TIMEOUT_MS) && CONFIGURED_REQUEST_TIMEOUT_MS > 0)
+    return CONFIGURED_REQUEST_TIMEOUT_MS;
+  return opts.thinking === true ? THINKING_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+function timeoutMessage(timeoutMs) {
+  return `请求超时（${Math.round(timeoutMs / 60000)} 分钟无响应，已中断，计入未知）`;
+}
 
 // Streaming variant used by the speed probe: measures TTFT (first content chunk)
 // and decode throughput over the rest of the generation.
@@ -570,10 +602,16 @@ async function chatStream(b, model, prompt, opts) {
     model, messages: [{ role: 'user', content: prompt }],
     temperature: 0, max_tokens: opts.max_tokens || 2048, stream: true,
     stream_options: { include_usage: true },
-    chat_template_kwargs: { enable_thinking: false },
+    chat_template_kwargs: {
+      enable_thinking: opts.thinking === true,
+      ...(opts.thinking ? { reasoning_effort: opts.effort || 'xhigh' } : {}),
+    },
   };
   const controller = new AbortController();
   track(opts.runId || '', controller);
+  const timeoutMs = requestTimeoutMs(opts);
+  let timedOut = false;
+  const watchdog = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   let res;
   try {
     res = await fetch(base + '/chat/completions', { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
@@ -586,11 +624,17 @@ async function chatStream(b, model, prompt, opts) {
       } else throw Error('HTTP ' + res.status + ' ' + errText.slice(0, 200));
     }
   } catch (e) {
+    clearTimeout(watchdog);
     untrack(opts.runId || '', controller);
+    if (timedOut) throw Error(timeoutMessage(timeoutMs));
     throw e;
   }
   // controller 保留到流读完：流式 body 未消费完之前，中断仍要能取消在途生成
-  if (!res.ok || !res.body) { untrack(opts.runId || '', controller); throw Error('HTTP ' + res.status); }
+  if (!res.ok || !res.body) {
+    clearTimeout(watchdog);
+    untrack(opts.runId || '', controller);
+    throw Error('HTTP ' + res.status);
+  }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -619,7 +663,11 @@ async function chatStream(b, model, prompt, opts) {
         if (j.choices?.[0]?.finish_reason) finishReason = j.choices[0].finish_reason;
       }
     }
+  } catch (e) {
+    if (timedOut) throw Error(timeoutMessage(timeoutMs));
+    throw e;
   } finally {
+    clearTimeout(watchdog);
     untrack(opts.runId || '', controller);
   }
   const tokens = usage?.completion_tokens || chunks;
@@ -628,8 +676,8 @@ async function chatStream(b, model, prompt, opts) {
   return { text, tokens, ttftMs, tokPerSec: speed.tokPerSec, finishReason };
 }
 
-// 单请求看门狗：xhigh 思考/长上下文一题可能十几分钟，超过上限视为停滞，中断并计为未知（可用 LLM_REQUEST_TIMEOUT_MS 覆盖）
-const REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_MS) || 20 * 60 * 1000;
+// 单请求看门狗：普通请求默认 10 分钟，开启思考默认 15 分钟；可用
+// LLM_REQUEST_TIMEOUT_MS 显式覆盖两者。
 
 async function chat(b, model, prompt, opts) {
   const base = (b.endpoint || 'http://127.0.0.1:9292/v1').replace(/\/$/, '');
@@ -639,8 +687,9 @@ async function chat(b, model, prompt, opts) {
   track(opts.runId || '', controller);
   const run = opts.runId ? runs.get(opts.runId) : null;
   const started = Date.now();
+  const timeoutMs = requestTimeoutMs(opts);
   let timedOut = false;
-  const watchdog = setTimeout(() => { timedOut = true; controller.abort(); }, REQUEST_TIMEOUT_MS);
+  const watchdog = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   // 心跳：长生成期间每 60s 在日志里报一次存活，避免"看起来卡住了"
   const heartbeat = opts.heartbeat && run ? setInterval(() => {
     if (!run.cancelRequested) logLine(run, `${opts.heartbeat}：仍在生成（已等待 ${Math.round((Date.now() - started) / 1000)}s）`);
@@ -661,7 +710,7 @@ async function chat(b, model, prompt, opts) {
       signal: controller.signal,
     });
   } catch (e) {
-    if (timedOut) throw Error(`请求超时（${Math.round(REQUEST_TIMEOUT_MS / 60000)} 分钟无响应，已中断，计入未知）`);
+    if (timedOut) throw Error(timeoutMessage(timeoutMs));
     throw e;
   } finally {
     clearTimeout(watchdog);

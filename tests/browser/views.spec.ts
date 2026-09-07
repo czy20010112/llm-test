@@ -21,16 +21,18 @@ test('composer: model dropdown rows and benchmark task table', async ({ page }) 
     await first.selectOption(value);
     await expect(page.getByRole('combobox')).toHaveCount(n0 + 1);
   }
-  // 测试项目下拉（打开后能看到全部基准与备注）
+  // 测试项目下拉（打开后能看到全部基准与说明）
   await page.getByRole('button', { name: '选择测试项目…' }).click();
   await expect(page.getByText('HumanEval+（代码生成）')).toBeVisible();
   await expect(page.getByText('LiveCodeBench（竞赛编程）')).toBeVisible();
   await expect(page.getByText('DS-1000（数据科学编程）')).toBeVisible();
   await expect(page.getByText('LongBench v2（长上下文）')).toBeVisible();
   await page.getByText('LongBench v2（长上下文）').click();
-  // 选中后表单里只显示名称，备注列显示领域与沙箱信息；第二行自动出现
+  // 选中后表单里只显示名称；说明留在下拉菜单，表格不再重复显示备注列
   await expect(page.locator('.task-table tbody tr:first-child .dd-toggle')).toContainText('LongBench v2');
-  await expect(page.locator('.task-table td.c-note').first()).toContainText('超长上下文');
+  await expect(page.locator('.task-table .c-note')).toHaveCount(0);
+  await expect(page.locator('.task-table input[type="checkbox"]').first()).not.toBeChecked();
+  await expect(page.locator('.task-table tbody tr:first-child select')).toBeDisabled();
   await expect(page.locator('.task-table tbody tr')).toHaveCount(2);
   await expect(page.getByRole('button', { name: /添加测试项目/ })).toHaveCount(0);
   // 端点设置不在新建评测里
@@ -89,7 +91,7 @@ test('completion on another view shows a dismissible toast', async ({ page }) =>
   await expect(page.locator('.toast')).toHaveCount(0);
 });
 
-test('completion while watching the queue jumps to history with logs expanded', async ({ page }) => {
+test('completion while watching the queue jumps to history with logs collapsed', async ({ page }) => {
   let done = false;
   await page.route('**/api/runs', (route) => route.fulfill({
     contentType: 'application/json',
@@ -104,10 +106,12 @@ test('completion while watching the queue jumps to history with logs expanded', 
   await expect(page.getByText('跳转测试')).toBeVisible();
   await page.waitForTimeout(2400);
   done = true;
-  await page.waitForTimeout(3400); // 轮询检测 + 跳转动画 + 日志展开
+  await page.waitForTimeout(3400); // 轮询检测 + 跳转动画
   await expect(page.locator('.view-title')).toHaveText('历史记录');
   const card = page.locator('.run-card[data-run-id="r1"]');
   await expect(card).toBeVisible();
+  await expect(card.locator('details')).toHaveJSProperty('open', false);
+  await card.locator('summary').click();
   await expect(card.locator('details')).toHaveJSProperty('open', true);
 });
 

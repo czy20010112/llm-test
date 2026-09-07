@@ -120,6 +120,16 @@ function toastClick(id: string) {
   dismissToast(id);
   openRunLog(id);
 }
+function scrollLogToLatest(log: HTMLElement | null) {
+  if (log) log.scrollTo({ top: log.scrollHeight, behavior: 'auto' });
+}
+
+function scrollQueueLogsToLatest() {
+  nextTick(() => {
+    document.querySelectorAll<HTMLElement>('.auto-scroll').forEach((el) => scrollLogToLatest(el));
+  });
+}
+
 // 历史记录中打开某次运行的逐题日志并滚到底部（DOM 操作避免 :open 绑定和手动开合打架）
 function openRunLog(id: string) {
   select('history');
@@ -129,9 +139,14 @@ function openRunLog(id: string) {
     const details = card.querySelector('details');
     if (details) details.open = true;
     card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    const log = card.querySelector<HTMLElement>('.log');
-    if (log) log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
+    scrollLogToLatest(card.querySelector<HTMLElement>('.log'));
   }, 380); // 等待视图过渡完成
+}
+
+function onHistoryLogToggle(e: Event) {
+  const details = e.currentTarget as HTMLDetailsElement;
+  if (!details.open) return;
+  nextTick(() => scrollLogToLatest(details.querySelector<HTMLElement>('.log')));
 }
 
 let lastPreflightAt = 0;
@@ -144,7 +159,7 @@ async function refreshRuns() {
     for (const r of fresh) {
       const prev = prevStatuses.get(r.id);
       if (statusSeeded && prev === 'running' && r.status !== 'running') {
-        if (active.value === 'queue') openRunLog(r.id);
+        if (active.value === 'queue') select('history');
         else pushToast(r);
       }
       prevStatuses.set(r.id, r.status);
@@ -153,14 +168,11 @@ async function refreshRuns() {
   } catch { /* keep last */ }
 }
 
-// auto-scroll open queue logs to the bottom as they grow
+// auto-scroll queue logs as they grow and whenever the user returns to Queue
 watch(() => runs.value.map((r) => (r.log || []).length).join(','), () => {
-  nextTick(() => {
-    document.querySelectorAll<HTMLElement>('.auto-scroll').forEach((el) => {
-      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    });
-  });
+  if (active.value === 'queue') scrollQueueLogsToLatest();
 });
+watch(active, (view) => { if (view === 'queue') scrollQueueLogsToLatest(); });
 
 function statusText(s: string) {
   return ({
@@ -186,9 +198,25 @@ function removeModelRow(i: number) {
 }
 
 // ---------- 新建评测：测试项目表格（逐行下拉 + 每行参数） ----------
-const taskRows = ref([{ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' }]);
+type TaskRow = {
+  task: string;
+  limit: string;
+  repeats: string;
+  concurrency: string;
+  maxTokens: string;
+  thinking: boolean;
+  reasoningEffort: string;
+};
+const newTaskRow = (): TaskRow => ({ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '', thinking: false, reasoningEffort: 'xhigh' });
+const taskRows = ref<TaskRow[]>([newTaskRow()]);
 const openDd = ref(-1);
 const judgeKinds = ['humanevalplus', 'mbppplus', 'livecodebench', 'ds1000', 'ifeval', 'ifbench'];
+const reasoningEfforts = [
+  { id: 'low', zh: 'low', en: 'low' },
+  { id: 'medium', zh: 'medium', en: 'medium' },
+  { id: 'high', zh: 'high', en: 'high' },
+  { id: 'xhigh', zh: 'xhigh（官方常用）', en: 'xhigh (official-style)' },
+];
 const taskById = (id: string) => tasks.value.find((t) => t.id === id);
 
 function closeMenus(e: Event) {
@@ -197,13 +225,13 @@ function closeMenus(e: Event) {
 function pickTask(i: number, id: string) {
   taskRows.value[i].task = id;
   openDd.value = -1;
-  if (i === taskRows.value.length - 1) taskRows.value.push({ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' });
+  if (i === taskRows.value.length - 1) taskRows.value.push(newTaskRow());
 }
 function removeTaskRow(i: number) {
   taskRows.value.splice(i, 1);
-  if (!taskRows.value.length) taskRows.value.push({ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' });
+  if (!taskRows.value.length) taskRows.value.push(newTaskRow());
   const last = taskRows.value[taskRows.value.length - 1];
-  if (last.task) taskRows.value.push({ task: '', limit: '', repeats: '', concurrency: '', maxTokens: '' });
+  if (last.task) taskRows.value.push(newTaskRow());
 }
 
 async function submitRun() {
@@ -215,6 +243,8 @@ async function submitRun() {
       for (const k of ['limit', 'repeats', 'concurrency', 'maxTokens'] as const) {
         if (r[k] !== '' && Number(r[k]) > 0) t[k] = Number(r[k]);
       }
+      t.thinking = r.thinking === true;
+      if (t.thinking) t.reasoningEffort = r.reasoningEffort || 'xhigh';
       return t;
     });
   if (!taskPayload.length) { flash('err', t('请至少选择一个测试项目', 'Select at least one benchmark')); return; }
@@ -608,7 +638,7 @@ async function saveProfile() {
           </fieldset>
 
           <fieldset class="panel">
-            <legend>{{ t('测试项目（每行一项，参数可留空用默认值，选中后自动出现下一行）', 'Benchmarks (one per row; blank fields use defaults; picking one reveals the next row)') }}</legend>
+            <legend>{{ t('测试项目（每行一项；思考默认关闭；参数可留空用默认值）', 'Benchmarks (one per row; thinking is off by default; blank fields use defaults)') }}</legend>
             <table class="task-table">
               <thead>
                 <tr>
@@ -617,7 +647,8 @@ async function saveProfile() {
                   <th>{{ t('重复次数', 'Repeats') }}</th>
                   <th>{{ t('并发请求', 'Concurrency') }}</th>
                   <th>max_tokens</th>
-                  <th class="c-note">{{ t('备注', 'Note') }}</th>
+                  <th class="c-thinking">{{ t('思考', 'Thinking') }}</th>
+                  <th class="c-effort">{{ t('思考等级', 'Effort') }}</th>
                   <th class="c-x"></th>
                 </tr>
               </thead>
@@ -640,8 +671,13 @@ async function saveProfile() {
                   <td><input v-model="r.repeats" class="input num" type="number" min="1" placeholder="1" /></td>
                   <td><input v-model="r.concurrency" class="input num" type="number" min="1" placeholder="1" /></td>
                   <td><input v-model="r.maxTokens" class="input num" type="number" min="256" :placeholder="taskById(r.task)?.defaultMaxTokens || 4096" /></td>
-                  <td class="c-note soft">
-                    <template v-if="taskById(r.task)">{{ taskAbility(taskById(r.task)) }} · {{ judgeKinds.includes(taskById(r.task).kind) ? t('需要判题沙箱', 'sandbox required') : t('无需沙箱', 'no sandbox') }}</template>
+                  <td class="c-thinking">
+                    <input v-model="r.thinking" type="checkbox" :aria-label="`${t('开启思考', 'Enable thinking')} ${i + 1}`" />
+                  </td>
+                  <td>
+                    <select v-model="r.reasoningEffort" class="input" :disabled="!r.thinking" :aria-label="`${t('思考等级', 'Thinking effort')} ${i + 1}`">
+                      <option v-for="effort in reasoningEfforts" :key="effort.id" :value="effort.id">{{ lang === 'en' ? effort.en : effort.zh }}</option>
+                    </select>
                   </td>
                   <td class="c-x">
                     <button
@@ -656,7 +692,7 @@ async function saveProfile() {
 
           <div class="actions">
             <button class="btn primary" @click="submitRun">{{ t('开始评测', 'Start run') }}</button>
-            <span class="soft">{{ t('temperature=0 · 默认抑制思维链（AIME / GPQA / LiveCodeBench / IFBench 按官方口径开启思考 xhigh）· 留空的参数使用每项默认值', 'temperature=0 · thinking off by default (AIME / GPQA / LiveCodeBench / IFBench run thinking on, effort xhigh, per official setups) · blank fields use per-task defaults') }}</span>
+            <span class="soft">{{ t('temperature=0 · 每项默认关闭思考；按行开启后可选择思考等级 · 留空的参数使用每项默认值', 'temperature=0 · thinking is off by default for every benchmark; enable it per row to choose an effort · blank fields use per-task defaults') }}</span>
           </div>
         </template>
 
@@ -712,7 +748,7 @@ async function saveProfile() {
                 </tr>
               </tbody>
             </table>
-            <details>
+            <details @toggle="onHistoryLogToggle">
               <summary>{{ t('逐题日志', 'Per-item logs') }}（{{ (r.log || []).length }}{{ t(' 行）', ' lines)') }}</summary>
               <pre class="log">{{ (r.log || []).join('\n') }}</pre>
             </details>
@@ -787,7 +823,7 @@ async function saveProfile() {
         <!-- 协议与基线 -->
         <template v-else-if="active === 'protocols'">
           <div class="panel">
-            <p>{{ t('统一采样口径：temperature=0、单次生成（pass@1）。与官方榜单重叠的协议按官方口径开启思考（AIME 2025 / GPQA Diamond / LiveCodeBench / IFBench，思考档位 xhigh；AIME 输出预算 38912，其余 32768），其余协议默认抑制思维链（enable_thinking=false）。代码与指令类判分只看思考后的正文。选择题只认明确的最终答案（最终答案：X / \boxed{X} / 末行选项字母），推理无结论计"未知"并保留在分母中，避免把截断的推理误判为错误。', 'Common sampling: temperature=0, single generation (pass@1). Protocols overlapping the official leaderboard run with thinking on per the official setup (AIME 2025 / GPQA Diamond / LiveCodeBench / IFBench, effort xhigh; output budget 38,912 for AIME, 32,768 for the rest); all other protocols keep thinking disabled by default (enable_thinking=false). Code and instruction scoring reads only the post-thinking content. MCQ scoring accepts an explicit final answer only; reasoning without a conclusion counts as unknown and stays in the denominator, so truncated reasoning is not graded wrong.') }}</p>
+            <p>{{ t('统一采样口径：temperature=0、单次生成（pass@1）。新建评测中所有项目默认关闭思考（enable_thinking=false），可在项目行单独开启并选择 low / medium / high / xhigh；如需复现官方榜单口径，再按项目说明手动开启对应等级（通常为 xhigh，AIME 输出预算 38912，其余 32768）。代码与指令类判分只看思考后的正文。选择题只认明确的最终答案（最终答案：X / \boxed{X} / 末行选项字母），推理无结论计"未知"并保留在分母中，避免把截断的推理误判为错误。', 'Common sampling: temperature=0, single generation (pass@1). New runs disable thinking for every benchmark by default (enable_thinking=false); enable it per benchmark row and choose low / medium / high / xhigh. To reproduce an official leaderboard setup, turn on the level stated by that benchmark (usually xhigh; AIME budget 38,912 and the others 32,768). Code and instruction scoring reads only the post-thinking content. MCQ scoring accepts an explicit final answer only; reasoning without a conclusion counts as unknown and stays in the denominator, so truncated reasoning is not graded wrong.') }}</p>
           </div>
           <table class="table">
             <thead><tr><th>{{ t('协议', 'Protocol') }}</th><th>{{ t('能力', 'Ability') }}</th><th>{{ t('判分方式', 'Scoring') }}</th><th>{{ t('默认题数 / 全量', 'Default items / pool') }}</th></tr></thead>
@@ -1025,7 +1061,8 @@ select.input { appearance: auto; }
 }
 .task-table th { background: var(--color-teal-soft); color: var(--color-ink-soft); font-weight: 600; white-space: nowrap; }
 .task-table .c-task { width: 30%; min-width: 220px; }
-.task-table .c-note { width: 26%; }
+.task-table .c-thinking { width: 72px; text-align: center; }
+.task-table .c-effort { width: 150px; }
 .task-table .c-x { width: 36px; text-align: center; border: 0 !important; background: transparent; }
 .task-table td .input { border-color: transparent; background: transparent; }
 .task-table td .input:focus { background: var(--color-paper); border-color: var(--color-teal-line); }
