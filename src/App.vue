@@ -121,13 +121,24 @@ function toastClick(id: string) {
   openRunLog(id);
 }
 function scrollLogToLatest(log: HTMLElement | null) {
-  if (log) log.scrollTo({ top: log.scrollHeight, behavior: 'auto' });
+  if (!log) return;
+  log.scrollTo({ top: log.scrollHeight, behavior: 'auto' });
+  // A details element or a view transition can complete layout one frame
+  // after the event handler. Repeat after layout so returning to a view and
+  // opening history logs both land on the actual latest line.
+  requestAnimationFrame(() => {
+    if (log.isConnected) log.scrollTo({ top: log.scrollHeight, behavior: 'auto' });
+  });
 }
 
 function scrollQueueLogsToLatest() {
   nextTick(() => {
     document.querySelectorAll<HTMLElement>('.auto-scroll').forEach((el) => scrollLogToLatest(el));
   });
+}
+
+function onViewEnter() {
+  if (active.value === 'queue') scrollQueueLogsToLatest();
 }
 
 // 历史记录中打开某次运行的逐题日志并滚到底部（DOM 操作避免 :open 绑定和手动开合打架）
@@ -571,7 +582,7 @@ async function saveProfile() {
         <h1 class="view-title">{{ activeView.label }}</h1>
         <p v-if="notice" class="notice" :class="notice.kind">{{ notice.text }}</p>
       </header>
-      <Transition name="view" mode="out-in">
+      <Transition name="view" mode="out-in" @after-enter="onViewEnter">
         <section class="view-body" :data-view="active" :key="active">
 
         <!-- 总览 -->

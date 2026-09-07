@@ -73,6 +73,26 @@ test('queue shows only running runs; history lists finished runs', async ({ page
   await expect(page.getByText('运行中的评测')).toBeHidden();
 });
 
+test('queue log scrolls to the latest line after returning to the queue', async ({ page }) => {
+  const lines = Array.from({ length: 90 }, (_, i) => `line-${i + 1}`);
+  await page.route('**/api/runs', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      id: 'r1', name: '滚动测试', status: 'running', models: ['m1'], tasks: ['t1'],
+      progress: { modelIndex: 0 }, log: lines, rows: [], donePairs: 0,
+    }]),
+  }));
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: '运行队列' }).click();
+  await page.waitForTimeout(450);
+  await page.getByRole('button', { name: '新建评测' }).click();
+  await page.getByRole('button', { name: '运行队列' }).click();
+
+  await expect.poll(async () => page.locator('.auto-scroll').evaluate((el) =>
+    el.scrollHeight - el.clientHeight - el.scrollTop
+  )).toBeLessThanOrEqual(2);
+});
+
 test('completion on another view shows a dismissible toast', async ({ page }) => {
   let done = false;
   const run = (status: string) => ({

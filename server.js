@@ -4,6 +4,8 @@ const path = require('path');
 const { scoreChoice, scoreAime, aggregateScore } = require('./server/scoring');
 const { JUDGE_URL, judgeRun, judgeHealth } = require('./server/judge');
 const { requestFetchOptions } = require('./server/llm-client');
+const { updateRowCheckpoint } = require('./server/run-progress');
+const { detectOutputLoop } = require('./server/loop-detector');
 const {
   readJsonl, extractCode, decodeSpeed,
   buildLongBenchPrompt, buildHumanEvalPrompt, buildMbppPrompt,
@@ -348,7 +350,10 @@ async function execute(run, b, skip = null) {
         row.checkpoint = { liveRepeat: i + 1, items: resumeCheckpoint || {} };
         saveRuns();
         try {
-          const v = await measure(run, b, model, task, cfgT, resumeCheckpoint);
+          const v = await measure(run, b, model, task, cfgT, resumeCheckpoint, (partial) => {
+            updateRowCheckpoint(row, i + 1, partial);
+            saveRuns();
+          });
           if (run.cancelRequested) break;
           row.details[i] = v;
           row.repeat = row.details.filter(Boolean).length;
@@ -417,7 +422,7 @@ function logCodeVerdict(run, model, task, qi, count, verdict, modelText) {
 function stripThink(s) {
   return s.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').replace(/<think>[\s\S]*$/i, '').trim();
 }
-async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
+async function measure(run, b, model, task, cfgT = {}, resumeItems = null, onQuestionSettled = null) {
   const thinking = resolveThinking(cfgT, task);
   const effort = thinking ? resolveReasoningEffort(cfgT) : undefined;
   if (task.kind === 'smoke') {
@@ -462,9 +467,27 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
   async function processQuestion(q, qi) {
     const hbLabel = `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}`;
     logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：请求中…`);
+    async function questionChat(prompt) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          return await chatStream(b, model, prompt, {
+            max_tokens: outputLimit,
+            runId: run.id,
+            heartbeat: hbLabel,
+            thinking,
+            effort,
+            detectLoops: thinking,
+          });
+        } catch (e) {
+          if (e.code !== 'OUTPUT_LOOP' || attempt > 0) throw e;
+          logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：检测到思考循环（${e.loopKind || '重复输出'}），正在重测（第 2 次/2）`);
+        }
+      }
+      throw new Error('题目重测失败');
+    }
     try {
       if (task.kind === 'longbench2') {
-        const r = await chat(b, model, buildLongBenchPrompt(q), { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel, thinking, effort });
+        const r = await questionChat(buildLongBenchPrompt(q));
         const verdict = scoreChoice(q.answer, (r.text || '').trim());
         tally(verdict.status, qi);
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
@@ -472,20 +495,20 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         const prompt = task.kind === 'gpqa'
           ? `请解答下面选择题。最后一行必须严格写成“最终答案：X”或“\\boxed{X}”，X只能是 A、B、C 或 D。\n${q.problem}`
           : `请解答下面选择题。最后一行必须严格写成“最终答案：X”或“\\boxed{X}”，X只能是 A-J。\n${q.question}\n${q.options_text}`;
-        const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id, thinking, effort });
+        const r = await questionChat(prompt);
         const verdict = scoreChoice(String(q.answer || '').toUpperCase(), stripThink((r.text || '').trim()));
         tally(verdict.status, qi);
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
       } else if (task.kind === 'aime') {
         const prompt = `请解答下面AIME数学题。最后一行必须严格写成“最终答案：N”或“\\boxed{N}”，N是0到999的整数。\n${q.problem}`;
-        const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id, thinking, effort });
+        const r = await questionChat(prompt);
         const verdict = scoreAime(String(q.answer), stripThink(String(r.text || r.reasoningText || '').trim()));
         tally(verdict.status, qi);
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${verdictLabel(verdict, r)}，模型回答 ${(r.text || '').slice(0, 200)}`);
       } else if (task.kind === 'humanevalplus' || task.kind === 'mbppplus') {
         const entry = task.kind === 'humanevalplus' ? q.entry_point : (q.code.match(/def\s+([A-Za-z_]\w*)\s*\(/) || [])[1];
         const prompt = task.kind === 'humanevalplus' ? buildHumanEvalPrompt(q) : buildMbppPrompt(q, entry || 'solution');
-        const r = await chat(b, model, prompt, { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel, thinking, effort });
+        const r = await questionChat(prompt);
         const code = extractCode(r.text);
         const verdict = judgeVerdict(await judgeRun({
           mode: 'tests', code, entry_point: entry, test_code: q.test, timeout: 15,
@@ -494,7 +517,7 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else if (task.kind === 'livecodebench') {
         // 判分只取思考后的正文（reasoning_content / <think> 已剥离）
-        const r = await chat(b, model, buildLiveCodeBenchPrompt(q), { max_tokens: outputLimit, runId: run.id, thinking, effort });
+        const r = await questionChat(buildLiveCodeBenchPrompt(q));
         const code = extractCode(r.text);
         let verdict;
         if (q.mode === 'functional') {
@@ -509,7 +532,7 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         tally(verdict.passed ? 'correct' : 'incorrect', qi);
         logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else if (task.kind === 'ds1000') {
-        const r = await chat(b, model, buildDs1000Prompt(q), { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel, thinking, effort });
+        const r = await questionChat(buildDs1000Prompt(q));
         const solution = extractCode(r.text, { solutionMarkers: true });
         const verdict = judgeVerdict(await judgeRun({
           mode: 'script', code: buildDs1000Script(q.code_context, solution), timeout: 60,
@@ -518,7 +541,7 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         logCodeVerdict(run, model, task, qi, sample.length, verdict, r.text);
       } else if (task.kind === 'ifeval' || task.kind === 'ifbench') {
         // 官方校验器（vendored 到 judge/verifiers/）：prompt 原样下发，strict 口径判分
-        const r = await chat(b, model, q.prompt, { max_tokens: outputLimit, runId: run.id, thinking, effort });
+        const r = await questionChat(q.prompt);
         const response = stripThink((r.text || '').trim());
         const script = task.kind === 'ifeval' ? buildIfevalScript(q, response) : buildIfbenchScript(q, response);
         const jres = await judgeRun({ mode: 'script', code: script, timeout: 30 });
@@ -529,7 +552,7 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${passed ? '通过' : '未通过'}（strict ${parsed ? (parsed.strict ? '✓' : '✗') : '?'} / loose ${parsed ? (parsed.loose ? '✓' : '✗') : '?'}）${failed.length ? `｜未满足约束：${failed.join(', ')}` : ''}｜回答前 120 字：${(r.text || '').slice(0, 120)}`);
       } else if (task.kind === 'xstest') {
         // 250 条"看起来危险、实际安全"的提示：正常作答=对，误拒=错
-        const r = await chat(b, model, q.prompt, { max_tokens: outputLimit, runId: run.id, heartbeat: hbLabel, thinking, effort });
+        const r = await questionChat(q.prompt);
         const v = classifyXstestRefusal(r.text);
         tally(v.refused ? 'incorrect' : 'correct', qi);
         logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：${v.refused ? `误拒（${v.reason}）` : '正常作答'}｜${q.type}｜回答：${(r.text || '').slice(0, 100)}`);
@@ -538,11 +561,17 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
       }
     } catch (e) {
       // question-level failure (network, judge down, context overflow) is data, not a crashed run
-      // 用户取消导致的失败不算终态（恢复时会重新请求），其余计为未知并写入检查点
+      // 用户取消导致的失败不算终态（恢复时会重新请求），思考循环是模型失败，其余计为未知。
       if (run.cancelRequested) throw e;
+      if (e.code === 'OUTPUT_LOOP') {
+        tally('incorrect', qi);
+        logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：失败（思考循环，重测后仍重复输出）`);
+        return;
+      }
       unknown++;
       items[qi] = 'unknown';
       logLine(run, `${model} / ${task.name} / 题目 ${qi + 1}/${sample.length}：未知（${e.message}）`);
+      persistProgress();
     }
   }
   const answered = correct + incorrect;
@@ -551,6 +580,23 @@ async function measure(run, b, model, task, cfgT = {}, resumeItems = null) {
   function tally(status, qi) {
     if (status === 'correct') correct++; else if (status === 'incorrect') incorrect++; else unknown++;
     if (qi != null) items[qi] = status; // 题目级检查点：中断/恢复时据此跳过已判题
+    persistProgress();
+  }
+
+  function persistProgress() {
+    if (!onQuestionSettled) return;
+    const partial = {
+      score: aggregateScore({ correct, incorrect, unknown, total: sample.length }),
+      correct,
+      incorrect,
+      unknown,
+      total: sample.length,
+      answered: correct + incorrect,
+      samples: sample.length,
+      poolTotal: total,
+      items,
+    };
+    onQuestionSettled(partial);
   }
 }
 
@@ -610,8 +656,14 @@ async function chatStream(b, model, prompt, opts) {
   };
   const controller = new AbortController();
   track(opts.runId || '', controller);
+  const run = opts.runId ? runs.get(opts.runId) : null;
+  const started = Date.now();
+  const heartbeat = opts.heartbeat && run ? setInterval(() => {
+    if (!run.cancelRequested) logLine(run, `${opts.heartbeat}：仍在生成（已等待 ${Math.round((Date.now() - started) / 1000)}s）`);
+  }, 60000) : null;
   const timeoutMs = requestTimeoutMs(opts);
   let timedOut = false;
+  let loopFailure = null;
   const watchdog = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   let res;
   try {
@@ -630,20 +682,23 @@ async function chatStream(b, model, prompt, opts) {
     }
   } catch (e) {
     clearTimeout(watchdog);
+    if (heartbeat) clearInterval(heartbeat);
     untrack(opts.runId || '', controller);
+    if (loopFailure) throw loopFailure;
     if (timedOut) throw Error(timeoutMessage(timeoutMs));
     throw e;
   }
   // controller 保留到流读完：流式 body 未消费完之前，中断仍要能取消在途生成
   if (!res.ok || !res.body) {
     clearTimeout(watchdog);
+    if (heartbeat) clearInterval(heartbeat);
     untrack(opts.runId || '', controller);
     throw Error('HTTP ' + res.status);
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  let buf = '', text = '', chunks = 0, usage = null, finishReason = null, tFirst = 0, tLast = 0;
+  let buf = '', text = '', reasoningText = '', chunks = 0, usage = null, finishReason = null, tFirst = 0, tLast = 0;
   const t0 = Date.now();
   try {
     for (;;) {
@@ -659,26 +714,45 @@ async function chatStream(b, model, prompt, opts) {
         if (data === '[DONE]') continue;
         let j; try { j = JSON.parse(data); } catch { continue; }
         const delta = j.choices?.[0]?.delta || {};
-        if (typeof delta.content === 'string' && delta.content) {
-          text += delta.content; chunks++;
+        const contentDelta = typeof delta.content === 'string' ? delta.content : '';
+        const reasoningDelta = typeof delta.reasoning_content === 'string'
+          ? delta.reasoning_content
+          : (typeof delta.reasoning === 'string' ? delta.reasoning : '');
+        if (contentDelta) text += contentDelta;
+        if (reasoningDelta) reasoningText += reasoningDelta;
+        if (contentDelta || reasoningDelta) {
+          chunks++;
           if (!tFirst) tFirst = Date.now();
           tLast = Date.now();
         }
         if (j.usage) usage = j.usage;
         if (j.choices?.[0]?.finish_reason) finishReason = j.choices[0].finish_reason;
+        if (opts.detectLoops) {
+          const loop = detectOutputLoop(reasoningText) || detectOutputLoop(text);
+          if (loop) {
+            const error = new Error(`检测到输出循环（${loop.kind}）`);
+            error.code = 'OUTPUT_LOOP';
+            error.loopKind = loop.kind;
+            loopFailure = error;
+            controller.abort();
+            throw error;
+          }
+        }
       }
     }
   } catch (e) {
+    if (loopFailure) throw loopFailure;
     if (timedOut) throw Error(timeoutMessage(timeoutMs));
     throw e;
   } finally {
     clearTimeout(watchdog);
+    if (heartbeat) clearInterval(heartbeat);
     untrack(opts.runId || '', controller);
   }
   const tokens = usage?.completion_tokens || chunks;
   const ttftMs = tFirst ? tFirst - t0 : Date.now() - t0;
   const speed = decodeSpeed(tokens, tFirst, tLast);
-  return { text, tokens, ttftMs, tokPerSec: speed.tokPerSec, finishReason };
+  return { text, reasoningText, tokens, ttftMs, tokPerSec: speed.tokPerSec, finishReason };
 }
 
 // 单请求看门狗：普通请求默认 10 分钟，开启思考默认 15 分钟；可用
