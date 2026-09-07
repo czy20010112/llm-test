@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { scoreChoice, scoreAime, aggregateScore } = require('./server/scoring');
 const { JUDGE_URL, judgeRun, judgeHealth } = require('./server/judge');
+const { requestFetchOptions } = require('./server/llm-client');
 const {
   readJsonl, extractCode, decodeSpeed,
   buildLongBenchPrompt, buildHumanEvalPrompt, buildMbppPrompt,
@@ -614,13 +615,17 @@ async function chatStream(b, model, prompt, opts) {
   const watchdog = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   let res;
   try {
-    res = await fetch(base + '/chat/completions', { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
+    res = await fetch(base + '/chat/completions', requestFetchOptions(timeoutMs, {
+      method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal,
+    }));
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       // Older [OI]-compatible servers reject stream_options — retry without it.
       if (/stream_options/i.test(errText)) {
         delete payload.stream_options;
-        res = await fetch(base + '/chat/completions', { method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal });
+        res = await fetch(base + '/chat/completions', requestFetchOptions(timeoutMs, {
+          method: 'POST', headers, body: JSON.stringify(payload), signal: controller.signal,
+        }));
       } else throw Error('HTTP ' + res.status + ' ' + errText.slice(0, 200));
     }
   } catch (e) {
@@ -696,7 +701,7 @@ async function chat(b, model, prompt, opts) {
   }, 60000) : null;
   let r;
   try {
-    r = await fetch(base + '/chat/completions', {
+    r = await fetch(base + '/chat/completions', requestFetchOptions(timeoutMs, {
       method: 'POST', headers,
       body: JSON.stringify({
         model, messages: [{ role: 'user', content: prompt }],
@@ -708,7 +713,7 @@ async function chat(b, model, prompt, opts) {
         },
       }),
       signal: controller.signal,
-    });
+    }));
   } catch (e) {
     if (timedOut) throw Error(timeoutMessage(timeoutMs));
     throw e;
