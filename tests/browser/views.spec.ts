@@ -136,3 +136,71 @@ test('compare view: radar chart with selectable series and old-name normalizatio
   await page.locator('.legend-chip').nth(1).click();
   await expect(page.locator('svg .series')).toHaveCount(2);
 });
+
+test('history offers rename between delete and resume; note shows in parentheses', async ({ page }) => {
+  await page.route('**/api/runs', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify([
+      { id: 'r1', name: '原始名', note: 'kvq4', status: 'partial', models: ['m1'], tasks: ['t1'], donePairs: 1, log: [], rows: [] },
+      { id: 'r2', name: '无备注', note: '', status: 'done', models: ['m1'], tasks: ['t1'], donePairs: 1, log: [], rows: [] },
+    ]),
+  }));
+  await page.route('**/api/results/r1', (route, req) => {
+    if (req.method() === 'PATCH') {
+      const body = route.request().postDataJSON();
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, ...body }) });
+    }
+    return route.continue();
+  });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: '历史记录' }).click();
+  const card = page.locator('.run-card[data-run-id="r1"]');
+  // 备注括号显示在名称后
+  await expect(card.locator('header strong')).toHaveText('原始名（kvq4）');
+  // 无备注则无括号
+  await expect(page.locator('.run-card[data-run-id="r2"] header strong')).toHaveText('无备注');
+  // 按钮顺序：删除 → 改名 → 继续 → 选入对比
+  const btns = card.locator('.head-actions button');
+  await expect(btns.nth(0)).toHaveText('删除');
+  await expect(btns.nth(1)).toHaveText('改名');
+  await expect(btns.nth(2)).toHaveText('继续');
+  await expect(btns.nth(3)).toContainText('选入对比');
+  // 改名弹窗：改名称与备注后保存
+  await btns.nth(1).click();
+  const modal = page.locator('.modal');
+  await expect(modal).toBeVisible();
+  await modal.locator('input').first().fill('新名称');
+  await modal.locator('input').nth(1).fill('');
+  await modal.getByRole('button', { name: '保存' }).click();
+  await expect(page.locator('.notice.ok')).toContainText('已更新名称与备注');
+});
+
+test('settings: fetch protocol selector and fetched-models modal', async ({ page }) => {
+  await page.route('**/api/models', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ protocol: 'llama-swap', models: [{ id: 'm-a', name: 'Model A' }, { id: 'm-b' }] }),
+  }));
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: '环境设置' }).click();
+  // 协议下拉存在且可指定 llama-swap
+  const proto = page.getByRole('combobox');
+  await expect(proto).toBeVisible();
+  await proto.selectOption('llama-swap');
+  // 服务端缓存里已有模型列表，按钮可用且计数正确
+  const viewBtn = page.getByRole('button', { name: /查看已获取模型/ });
+  await expect(viewBtn).toBeEnabled();
+  await expect(viewBtn).toContainText('15');
+  await page.getByRole('button', { name: /重新获取模型/ }).click();
+  await expect(page.locator('.notice.ok')).toContainText('已获取 2 个模型');
+  // 获取后计数刷新
+  await expect(page.getByRole('button', { name: /查看已获取模型/ })).toContainText('2');
+  // 点开列表弹窗：显示全部模型
+  await page.getByRole('button', { name: /查看已获取模型/ }).click();
+  const modal = page.locator('.modal-wide');
+  await expect(modal).toBeVisible();
+  await expect(modal.locator('.model-list li')).toHaveCount(2);
+  await expect(modal).toContainText('m-a');
+  await expect(modal).toContainText('Model A');
+  await modal.getByRole('button', { name: '关闭' }).click();
+  await expect(modal).toBeHidden();
+});

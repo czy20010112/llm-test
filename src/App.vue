@@ -64,10 +64,10 @@ async function fetchModels() {
     const body = await api('/api/models', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint: cfg.value.endpoint, key: cfg.value.key }),
+      body: JSON.stringify({ endpoint: cfg.value.endpoint, key: cfg.value.key, protocol: profile.value.protocol }),
     });
-    models.value = (body.data || []).map((m: any) => ({ id: String(m.id), name: m.name ? String(m.name) : undefined, description: m.description ? String(m.description) : undefined }));
-    flash('ok', `${t('已获取', 'Fetched')} ${models.value.length} ${t('个模型', 'models')}`);
+    models.value = body.models || [];
+    flash('ok', `${t('已获取', 'Fetched')} ${models.value.length} ${t('个模型', 'models')}（${body.protocol}）`);
   } catch (e: any) {
     flash('err', t('获取模型失败：', 'Failed to fetch models: ') + e.message);
   } finally {
@@ -247,6 +247,29 @@ const pendingDelete = ref<any>(null);
 const confirmBtn = ref<HTMLButtonElement | null>(null);
 
 function askDelete(run: any) { pendingDelete.value = run; }
+
+// 继续：从中断/出错的运行接着跑（已完成项目自动跳过）
+async function resumeRun(run: any) {
+  try {
+    const res = await fetch(`/api/runs/${run.id}/resume`, { method: 'POST' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    flash('ok', t('已继续执行（已完成项目自动跳过）', 'Resumed — completed items are skipped'));
+    select('queue');
+    refreshRuns();
+  } catch (e: any) { flash('err', e.message); }
+}
+
+function elapsedMin(run: any) {
+  const mins = Math.max(1, Math.round((Date.now() - new Date(run.startedAt).getTime()) / 60000));
+  return t(`已运行 ${mins} 分钟`, `running for ${mins} min`);
+}
+
+function durationText(run: any) {
+  if (!run.finishedAt) return '';
+  const mins = Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 60000);
+  return mins >= 1 ? t(`耗时 ${mins} 分钟`, `took ${mins} min`) : t('耗时不足 1 分钟', 'took <1 min');
+}
 async function confirmDelete() {
   const run = pendingDelete.value;
   if (!run) return;
@@ -258,17 +281,17 @@ async function confirmDelete() {
   } catch (e: any) { flash('err', e.message); }
   pendingDelete.value = null;
 }
-function onModalKey(e: KeyboardEvent) {
+function onDeleteModalKey(e: KeyboardEvent) {
   if (!pendingDelete.value) return;
   if (e.key === 'Enter') { e.preventDefault(); confirmDelete(); }
   else if (e.key === 'Escape') { e.preventDefault(); pendingDelete.value = null; }
 }
 watch(pendingDelete, (v) => {
   if (v) {
-    window.addEventListener('keydown', onModalKey);
+    window.addEventListener('keydown', onDeleteModalKey);
     nextTick(() => confirmBtn.value?.focus());
   } else {
-    window.removeEventListener('keydown', onModalKey);
+    window.removeEventListener('keydown', onDeleteModalKey);
   }
 });
 
@@ -427,7 +450,48 @@ function radarPolygon(key: string): string {
 }
 
 // ---------- 环境设置 ----------
-const profile = ref({ id: 'default', endpoint: cfg.value.endpoint, key: '', rememberKey: false });
+const profile = ref({ id: 'default', endpoint: cfg.value.endpoint, key: '', rememberKey: false, protocol: 'openai' });
+const MODEL_PROTOCOLS = [
+  { id: 'openai', label: 'OpenAI 兼容 /v1/models', label_en: 'OpenAI-compatible /v1/models' },
+  { id: 'llama-swap', label: 'llama-swap（/v1 + /mu/models）', label_en: 'llama-swap (/v1 + /mu/models)' },
+];
+// 已获取模型：点击按钮弹出完整列表（同新建评测的下拉样式，只读）
+const showModels = ref(false);
+
+// ---------- 历史记录：编辑名称 / 备注 ----------
+const editingRun = ref<any>(null);
+const editForm = ref({ name: '', note: '' });
+function askRename(run: any) {
+  editingRun.value = run;
+  editForm.value = { name: run.name || '', note: run.note || '' };
+}
+async function confirmRename() {
+  const run = editingRun.value;
+  if (!run) return;
+  if (!editForm.value.name.trim()) { flash('err', t('名称不能为空', 'Name cannot be empty')); return; }
+  try {
+    await api(`/api/results/${run.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: editForm.value.name, note: editForm.value.note }),
+    });
+    flash('ok', t('已更新名称与备注', 'Name and note updated'));
+    editingRun.value = null;
+    refreshRuns();
+  } catch (e: any) { flash('err', e.message); }
+}
+// 名称后的备注括号：有备注才显示
+const nameWithNote = (run: any) => (run.note ? `${run.name}（${run.note}）` : run.name || run.id);
+function onRenameKey(e: KeyboardEvent) {
+  if (!editingRun.value) return;
+  if (e.key === 'Enter' && (e.target as HTMLElement).tagName !== 'TEXTAREA') { e.preventDefault(); confirmRename(); }
+  else if (e.key === 'Escape') { e.preventDefault(); editingRun.value = null; }
+}
+watch(editingRun, (v) => {
+  if (v) window.addEventListener('keydown', onRenameKey);
+  else window.removeEventListener('keydown', onRenameKey);
+});
+
 async function saveProfile() {
   cfg.value.endpoint = profile.value.endpoint;
   localStorage.setItem('llmCfg', JSON.stringify(cfg.value));
@@ -606,7 +670,7 @@ async function saveProfile() {
               <button class="btn ghost danger" @click="cancelRun(r.id)">{{ t('中断', 'Stop') }}</button>
             </header>
             <p class="soft">
-              {{ (r.models || []).join('、') }} · {{ (r.tasks || []).length }} {{ t('项测试', 'benchmarks') }} · {{ t('进度', 'progress') }} {{ (r.progress?.modelIndex || 0) + 1 }}/{{ r.models.length }}
+              {{ (r.models || []).join('、') }} · {{ t('进度', 'progress') }} {{ r.donePairs ?? 0 }}/{{ r.models.length * (r.tasks || []).length }} {{ t('项', 'items') }} · {{ elapsedMin(r) }}
               <template v-if="r.current"> — {{ r.current }}</template>
             </p>
             <div v-if="r.rows?.length" class="mini-table">
@@ -624,11 +688,13 @@ async function saveProfile() {
           <p v-if="!finishedRuns.length" class="soft">{{ t('暂无完成的结果。', 'No finished runs yet.') }}</p>
           <article v-for="r in finishedRuns" :key="r.id" class="run-card" :data-run-id="r.id">
             <header>
-              <strong>{{ r.name }}</strong>
+              <strong>{{ nameWithNote(r) }}</strong>
               <span class="badge" :class="r.status">{{ statusText(r.status) }}</span>
-              <span class="soft">{{ new Date(r.startedAt).toLocaleString() }}</span>
+              <span class="soft">{{ new Date(r.startedAt).toLocaleString() }}<template v-if="r.finishedAt"> · {{ durationText(r) }}</template></span>
               <span class="head-actions">
                 <button class="btn act-btn" :class="{ danger: true }" @click="askDelete(r)">{{ t('删除', 'Delete') }}</button>
+                <button class="btn act-btn rename-btn" :title="t('编辑名称与备注', 'Edit name and note')" @click="askRename(r)">{{ t('改名', 'Rename') }}</button>
+                <button v-if="r.status !== 'done'" class="btn act-btn resume-btn" :title="t('从中断处继续：已完成的轮次和题目自动跳过', 'Resume: completed repeats and items are skipped')" @click="resumeRun(r)">{{ t('继续', 'Resume') }}</button>
                 <button class="btn act-btn primary-ghost" :class="{ on: comparePicks.includes(r.id) }" @click="toggleCompare(r.id)">
                   {{ comparePicks.includes(r.id) ? t('已选入', 'Picked') : t('选入对比', 'Compare') }}
                 </button>
@@ -757,10 +823,19 @@ async function saveProfile() {
           <div class="panel">
             <div class="row"><label>{{ t('API 端点', 'API endpoint') }}</label><input v-model="profile.endpoint" class="input" type="text" /></div>
             <div class="row"><label>API Key</label><input v-model="profile.key" class="input" type="password" :placeholder="t('本地服务通常留空', 'usually empty for local services')" /></div>
+            <div class="row">
+              <label>{{ t('获取协议', 'Fetch protocol') }}</label>
+              <select v-model="profile.protocol" class="input wide" :aria-label="t('获取协议', 'Fetch protocol')">
+                <option v-for="p in MODEL_PROTOCOLS" :key="p.id" :value="p.id">{{ lang === 'en' ? p.label_en : p.label }}</option>
+              </select>
+            </div>
             <div class="row"><label></label><label class="inline"><input v-model="profile.rememberKey" type="checkbox" /> {{ t('保存 Key（服务端配置）', 'Remember key (server-side config)') }}</label></div>
             <div class="actions">
               <button class="btn primary" @click="saveProfile">{{ t('保存并应用', 'Save & apply') }}</button>
               <button class="btn" :disabled="loadingModels" @click="fetchModels">{{ loadingModels ? t('获取中…', 'Fetching…') : t('重新获取模型', 'Refetch models') }}</button>
+              <button class="btn" :disabled="!models.length" @click="showModels = true">
+                {{ t('查看已获取模型', 'View fetched models') }}（{{ models.length }}）
+              </button>
             </div>
           </div>
           <div class="panel">
@@ -795,6 +870,47 @@ async function saveProfile() {
           <div class="modal-actions">
             <button class="btn" type="button" @click="pendingDelete = null">{{ t('取消', 'Cancel') }}</button>
             <button ref="confirmBtn" class="btn primary danger-solid" type="button" @click="confirmDelete">{{ t('删除', 'Delete') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 编辑名称 / 备注弹窗 -->
+    <Transition name="fade">
+      <div v-if="editingRun" class="modal-backdrop" @click.self="editingRun = null">
+        <div class="modal" role="dialog" aria-modal="true" :aria-label="t('编辑名称与备注', 'Edit name and note')">
+          <h3>{{ t('编辑名称与备注', 'Edit name and note') }}</h3>
+          <div class="row">
+            <label>{{ t('名称', 'Name') }}</label>
+            <input ref="renameInput" v-model="editForm.name" class="input" type="text" />
+          </div>
+          <div class="row">
+            <label>{{ t('备注', 'Note') }}</label>
+            <input v-model="editForm.note" class="input" type="text" :placeholder="t('可选；显示在名称后的括号里', 'optional; shown in parentheses after the name')" />
+          </div>
+          <p class="soft">{{ t('Enter 保存，Esc 取消。', 'Enter saves, Esc cancels.') }}</p>
+          <div class="modal-actions">
+            <button class="btn" type="button" @click="editingRun = null">{{ t('取消', 'Cancel') }}</button>
+            <button class="btn primary" type="button" @click="confirmRename">{{ t('保存', 'Save') }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- 已获取模型列表弹窗 -->
+    <Transition name="fade">
+      <div v-if="showModels" class="modal-backdrop" @click.self="showModels = false">
+        <div class="modal modal-wide" role="dialog" aria-modal="true" :aria-label="t('已获取的模型', 'Fetched models')">
+          <h3>{{ t('已获取的模型', 'Fetched models') }}（{{ models.length }}）</h3>
+          <ul class="model-list">
+            <li v-for="m in models" :key="m.id">
+              <strong class="mono">{{ m.id }}</strong>
+              <small v-if="m.name" class="soft">{{ m.name }}</small>
+              <small v-if="m.description" class="soft"> — {{ m.description }}</small>
+            </li>
+          </ul>
+          <div class="modal-actions">
+            <button class="btn" type="button" @click="showModels = false">{{ t('关闭', 'Close') }}</button>
           </div>
         </div>
       </div>
@@ -986,6 +1102,7 @@ summary { cursor: pointer; color: var(--color-ink-soft); font-size: 13px; }
 .act-btn.primary-ghost { color: var(--color-teal); border-color: var(--color-teal-line); background: transparent; }
 .act-btn.primary-ghost:hover { background: var(--color-teal-soft); }
 .act-btn.primary-ghost.on { background: var(--color-teal); color: var(--color-teal-on); border-color: var(--color-teal); }
+.act-btn.rename-btn { color: var(--color-ink-soft); }
 
 /* 删除确认弹窗 */
 .modal-backdrop {
@@ -1003,6 +1120,12 @@ summary { cursor: pointer; color: var(--color-ink-soft); font-size: 13px; }
 .modal-name { font-family: var(--font-display); }
 .modal-name { margin: 4px 0; font-weight: 700; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.modal-wide { width: min(560px, 92vw); }
+.model-list { margin: 10px 0 0; padding: 0; list-style: none; max-height: 50vh; overflow: auto; }
+.model-list li { padding: 7px 4px; border-bottom: 1px dashed var(--color-line); }
+.model-list li:last-child { border-bottom: 0; }
+.model-list strong { font-size: 13px; }
+.model-list small { margin-left: 8px; }
 .danger-solid { background: var(--color-danger) !important; border-color: var(--color-danger) !important; color: #fff !important; }
 .danger-solid:hover { filter: brightness(1.08); }
 
