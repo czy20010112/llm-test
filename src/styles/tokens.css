@@ -1,89 +1,111 @@
 /* Precision Lab design tokens
- * Warm paper background, deep teal navigation, coral action color,
- * restrained green success state. Headings: Noto Serif SC / Playfair
- * Display style serif; controls and dense data: neutral sans stack.
- * Theme resolution: light / dark via [data-theme], default follows
- * the system through color-scheme (light-dark()).
+ * 极简黑白灰 + 单一强调色（珊瑚）
+ * 标题：Noto Serif SC 及同族（Source Han Serif SC / Playfair Display / Georgia）
+ * 正文：Noto Sans SC  数据与日志：Cascadia Code / JetBrains Mono
+ * 主题：默认跟随系统（light-dark()），可用 [data-theme] 显式指定
+ *
+ * 说明：变量名沿用旧体系，因此 App.vue 中原本引用 teal / coral 的地方
+ * 会自动落到新的中性灰阶与强调色上，无需逐个改动模板。
  */
 :root {
   color-scheme: light dark;
 
-  /* 暖纸底色与墨色 */
-  --color-paper: light-dark(#f6f1e7, #14181a);
-  --color-paper-raised: light-dark(#fbf8f1, #1c2226);
-  --color-ink: light-dark(#22272b, #e8e4da);
-  --color-ink-soft: light-dark(#5a6470, #9aa4ad);
-  --color-line: light-dark(#d8d2c4, #2c343a);
+  /* 纸白与墨黑、三级灰阶 */
+  --color-paper:        light-dark(#F6F6F5, #0E0F11);
+  --color-paper-raised: light-dark(#FFFFFF, #15171A);
+  --color-ink:          light-dark(#14161A, #EDEDEA);
+  --color-ink-2:        light-dark(#54585E, #A2A7AC);
+  --color-ink-soft:     light-dark(#8E9398, #6E747A);
+  --color-ink-faint:    light-dark(#BFC2C5, #3A3F44);
+  --color-line:         light-dark(#E7E6E3, #262A2E);
+  --color-line-2:       light-dark(#D6D5D1, #34393E);
 
-  /* 深青导航 */
-  --color-teal: light-dark(#0f5e5a, #123f3d);
-  --color-teal-strong: light-dark(#0a4744, #0d2f2d);
-  --color-teal-on: light-dark(#f2efe6, #dce8e5);
-  --color-teal-on-soft: light-dark(#b9cfca, #7fa8a2);
-  --color-teal-line: light-dark(#2a7a75, #1e5a56);
-  --color-teal-hover: light-dark(#176e69, #1a4d4a);
-  --color-teal-active: light-dark(#1d7d77, #20605b);
-  --color-teal-soft: light-dark(#e0ece9, #173230);
+  /* 导航区：原深青改中性（沿用变量名，零成本收敛到灰阶） */
+  --color-teal:         light-dark(#FFFFFF, #15171A);
+  --color-teal-strong:  light-dark(#14161A, #EDEDEA);
+  --color-teal-on:      light-dark(#14161A, #EDEDEA);
+  --color-teal-on-soft: light-dark(#8E9398, #6E747A);
+  --color-teal-line:    light-dark(#D6D5D1, #34393E);
+  --color-teal-hover:   light-dark(#F1F1EF, #1F2428);
+  --color-teal-active:  light-dark(#F1F1EF, #22262A);
+  --color-teal-soft:    light-dark(#F1F1EF, #1F2428);
 
-  /* 珊瑚行动色 */
-  --color-coral: light-dark(#e2593c, #f07a5d);
-  --color-coral-strong: light-dark(#c74a2f, #ff9478);
-  --color-coral-soft: light-dark(#fbe9e3, #3a231d);
+  /* 单一强调色 */
+  --color-coral:        light-dark(#E2593C, #F07A5D);
+  --color-coral-strong: light-dark(#C74A2F, #FF9478);
+  --color-coral-soft:   light-dark(#FBEDE8, #2E1C18);
+  --accent:             var(--color-coral);
+  --accent-strong:      var(--color-coral-strong);
+  --accent-soft:        var(--color-coral-soft);
 
-  /* 克制的成功绿与危险红 */
-  --color-success: light-dark(#3e7d4f, #6fbf85);
-  --color-success-soft: light-dark(#e2efe5, #1d3325);
-  --color-danger: light-dark(#b3372b, #e06a5c);
-  --color-warn: light-dark(#9a6b15, #d9a441);
+  /* 状态色：压得很淡，只服务于语义识别，不参与构图 */
+  --color-success:      light-dark(#3C7A57, #6FBF85);
+  --color-success-soft: light-dark(#E7EFE9, #1A2A20);
+  --color-danger:       light-dark(#B3372B, #E06A5C);
+  --color-warn:         light-dark(#9A6B15, #D9A441);
 
-  /* 形状、阴影、动效 */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --shadow-card: 0 1px 2px light-dark(rgb(34 39 43 / 8%), rgb(0 0 0 / 40%)),
-    0 4px 14px light-dark(rgb(34 39 43 / 6%), rgb(0 0 0 / 30%));
-  --motion-fast: 120ms ease-out;
-  --motion-med: 220ms ease-out;
+  /* 形状 */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
 
-  /* 字体：大标题衬线（中文用 Noto Serif SC），控件与密集数据无衬线 */
-  --font-display: 'Noto Serif SC', 'Source Han Serif SC', 'SimSun', 'Playfair Display', Georgia, 'Times New Roman', serif;
-  --font-body: 'Noto Sans SC', 'Source Han Sans SC', 'Microsoft YaHei', system-ui, 'Segoe UI', sans-serif;
-  --font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  --shadow-card: 0 1px 2px light-dark(rgb(20 22 26 / 4%), rgb(0 0 0 / 45%)),
+                 0 1px 1px light-dark(rgb(20 22 26 / 3%), rgb(0 0 0 / 30%));
+  --shadow-lift: 0 2px 6px light-dark(rgb(20 22 26 / 6%), rgb(0 0 0 / 50%)),
+                 0 10px 26px -8px light-dark(rgb(20 22 26 / 12%), rgb(0 0 0 / 60%));
+  --shadow-pop:  0 8px 18px light-dark(rgb(20 22 26 / 9%), rgb(0 0 0 / 55%)),
+                 0 26px 60px -18px light-dark(rgb(20 22 26 / 22%), rgb(0 0 0 / 70%));
+
+  /* 动效：短促、克制，入场偏 expo，回溯偏 spring */
+  --motion-fast: 140ms cubic-bezier(.4, 0, .2, 1);
+  --motion-med:  260ms cubic-bezier(.16, 1, .3, 1);
+  --ease-expo:   cubic-bezier(.16, 1, .3, 1);
+  --ease-spring: cubic-bezier(.34, 1.46, .64, 1);
+  --dur-1: 140ms;
+  --dur-2: 260ms;
+  --dur-3: 460ms;
+  --dur-4: 820ms;
+
+  /* 字体 */
+  --font-display: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', 'Playfair Display', Georgia, 'Times New Roman', serif;
+  --font-body:    'Noto Sans SC', 'Source Han Sans SC', 'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:    'Cascadia Code', 'JetBrains Mono', 'SF Mono', Consolas, monospace;
 }
 
 /* 显式主题：覆盖系统跟随 */
-:root[data-theme='light'] {
-  color-scheme: light;
-}
-
-:root[data-theme='dark'] {
-  color-scheme: dark;
-}
+:root[data-theme='light'] { color-scheme: light; }
+:root[data-theme='dark']  { color-scheme: dark; }
 
 /* 基础排版 */
-* {
-  box-sizing: border-box;
-}
-
-html,
-body {
-  margin: 0;
-  padding: 0;
-}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
 
 body {
   font-family: var(--font-body);
   font-size: 14px;
-  line-height: 1.55;
+  line-height: 1.6;
   background: var(--color-paper);
   color: var(--color-ink);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background var(--dur-3) var(--ease-expo), color var(--dur-3) var(--ease-expo);
 }
+
+::selection { background: var(--accent-soft); color: var(--accent-strong); }
+
+/* 细滚动条 */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-line-2); border-radius: 99px;
+  border: 2px solid transparent; background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--color-ink-faint); background-clip: content-box; }
 
 /* 尊重减少动态偏好 */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
