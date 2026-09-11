@@ -6,6 +6,6 @@ benchmarks/raw/
 data/runs.json
 data/workbench-state.json
 *.log
-scripts/data/*.jsonl
 server.log
-data/service.pid
+service.pid
+scripts/data/

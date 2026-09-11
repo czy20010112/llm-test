@@ -18,6 +18,12 @@ if not exist node_modules (
   call npm install --no-audit --no-fund || (echo [错误] 依赖安装失败。 & pause & exit /b 1)
 )
 
+rem ===== 前端构建（dist/ 不入库，干净检出后必须构建，否则服务可起但页面 404） =====
+if not exist dist\index.html (
+  echo [初始化] 构建前端……
+  call npm run build || (echo [错误] 前端构建失败。 & pause & exit /b 1)
+)
+
 rem ===== 端口占用检查 =====
 netstat -ano | findstr /r /c:":3000 .*LISTENING" >nul 2>nul
 if not errorlevel 1 (

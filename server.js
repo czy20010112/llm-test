@@ -17,6 +17,8 @@ const {
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
+if (!fs.existsSync(path.join(__dirname, 'dist', 'index.html')))
+  console.warn('[警告] dist/index.html 不存在——前端尚未构建，页面将 404。请先运行 npm run build（API 不受影响）。');
 
 const runs = new Map();
 

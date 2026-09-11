@@ -25,6 +25,15 @@ if (-not (Test-Path (Join-Path $root 'node_modules'))) {
   Pop-Location
 }
 
+# dist/ 不入库：缺失则构建前端，构建失败直接走"启动失败"通知（preflight 不依赖 dist）
+if (-not (Test-Path (Join-Path $root 'dist\index.html'))) {
+  Push-Location $root
+  cmd /c "npm run build" | Out-Null
+  $ok = $LASTEXITCODE -eq 0 -and (Test-Path (Join-Path $root 'dist\index.html'))
+  Pop-Location
+  if (-not $ok) { & $toast $failMsg; exit 1 }
+}
+
 # 尽力拉起 WSL 判题沙箱（离线只影响代码/指令类判分，不阻塞启动）
 wsl -d Ubuntu -u root -e bash -lc "systemctl start llmtest-judge-proxy >/dev/null 2>&1; docker start llm-test-judge >/dev/null 2>&1; true" 2>$null | Out-Null
 

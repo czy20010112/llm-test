@@ -9,7 +9,7 @@ A local LLM evaluation workbench for Windows, built with Vue 3 + Node. It talks 
 ```powershell
 cd D:\AI\llm-test
 npm install
-npm run build          # build the frontend (npm run dev for development)
+npm run build          # build the frontend (dist/ is gitignored — required after cloning; npm run dev for development)
 node server.js         # http://127.0.0.1:3000/
 ```
 
@@ -24,15 +24,16 @@ docker compose -f judge-compose.yaml up -d --build
 
 ## Start / Stop (Windows)
 
-Three double-clickable entry points live in the repo root:
+Four double-clickable entry points live in the repo root:
 
 | Entry | Behavior |
 |---|---|
 | `启动判题服务.bat` | Foreground console: streams live eval logs (per-item judging, errors); `Ctrl+C` stops the service |
 | `后台启动判题服务.vbs` | Hidden start (no window); a Windows toast 「判题服务启动成功」 appears once ready |
+| `后台启动判题服务.bat` | Same as above, pure .bat (no WScript; re-launches itself in a hidden window) |
 | `停止判题服务.vbs` | Stops the service and toasts 「判题服务已停止」 |
 
-The scripts locate Node (with an fnm default-alias fallback), run `npm install` on first use, check the port, and best-effort start the WSL judge sandbox (the `llmtest-judge-proxy` forwarder + `llm-test-judge` container; an offline sandbox only affects code/instruction scoring, not startup). Toasts are delivered via `scripts/service/*.ps1` using Windows Toast — allow notifications for PowerShell in system settings. Note: proactive AV heuristics (e.g. Kaspersky PDM:Trojan) may flag "hidden-window service launcher" scripts; if blocked, add `D:\AI\llm-test` to your AV trust zone.
+The scripts locate Node (with an fnm default-alias fallback), run `npm install` on first use, run `npm run build` when `dist/` is missing (dist is gitignored; after cloning the service starts but the page 404s until built), check the port, and best-effort start the WSL judge sandbox (the `llmtest-judge-proxy` forwarder + `llm-test-judge` container; an offline sandbox only affects code/instruction scoring, not startup). Toasts are delivered via `scripts/service/*.ps1` using Windows Toast — allow notifications for PowerShell in system settings. Note: proactive AV heuristics (e.g. Kaspersky PDM:Trojan) may flag "hidden-window service launcher" scripts; if blocked, add `D:\AI\llm-test` to your AV trust zone.
 
 ## Protocols (13)
 
